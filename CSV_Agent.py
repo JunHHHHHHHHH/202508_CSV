@@ -15,8 +15,7 @@ class StreamlitCallbackHandler(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         st.session_state.container.markdown(token, unsafe_allow_html=True)
     def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> Any:
-        with st.status("코드 실행 중... 👨‍💻", expanded=True):
-            st.code(input_str, language="python")
+        pass  # 코드 실행 과정을 화면에 노출하지 않음
 
 def init_session_state():
     if "messages" not in st.session_state:
@@ -47,6 +46,13 @@ def create_agent(df: pd.DataFrame, api_key: str):
         2. 제공된 `df`를 직접 수정하는 코드는 절대 생성하지 마세요.
         3. 모든 답변은 반드시 한국어로 제공하세요.
         4. 데이터 탐색 시 df.columns, df.head(), df.info(), df.describe() 등을 활용하세요.
+        5. 주요 통계치 요약, 핵심 인사이트 등은 markdown 테이블로 깔끔하게 정리해서 리포트에 포함해 주세요.
+        예시:
+        | 항목     | 평균   | 표준편차 |
+        |----------|--------|---------|
+        | hurdles  | 13.17  | 0.40    |
+        | highjump | 1.81   | 0.04    |
+        | shot     | 15.24  | 0.81    |
         """,
         allow_dangerous_code=True,
     )
@@ -70,8 +76,8 @@ def display_dashboard(df: pd.DataFrame):
     missing_data = missing_data[missing_data > 0]
     if not missing_data.empty:
         fig = px.bar(missing_data, x=missing_data.index, y=missing_data.values,
-                     title="결측치 개수", labels={'x': '컬럼', 'y': '결측치 수'},
-                     template='plotly_white')
+                    title="결측치 개수", labels={'x': '컬럼', 'y': '결측치 수'},
+                    template='plotly_white')
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.success("🎉 데이터에 결측치가 없습니다!")
@@ -176,13 +182,31 @@ def main():
         if st.button("🤖 AI 자동 리포트 생성"):
             auto_report_prompt = """
             ## 탐색적 데이터 분석(EDA) 리포트
+
             업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
-            리포트에는 다음 내용이 반드시 포함되어야 해:
-            1. **데이터 요약**: 데이터의 전체적인 크기, 컬럼 수, 주요 통계치에 대한 요약.
-            2. **핵심 인사이트**: 데이터를 분석하여 발견한 가장 중요한 비즈니스 또는 데이터 인사이트 3가지.
-            3. **상관 관계 분석**: 수치형 변수들 간의 상관 관계 분석, 가장 강한 양의/음의 상관관계 변수 쌍, 히트맵 시각화.
-            4. **이상치(Outlier) 분석**: 주요 수치형 컬럼의 이상치 분석, Box Plot 시각화.
-            5. **데이터 품질 문제**: 결측치나 데이터 타입 오류 등, 간단한 해결 방안 제안.
+
+            리포트에는 다음이 반드시 포함되어야 해:
+            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치 등.
+            - **핵심 인사이트**: 가장 눈에 띄는 인사이트 3가지.
+            - **상관관계 분석**: 수치형 변수들 간 상관관계(히트맵 포함).
+            - **이상치 분석**: 주요 컬럼 이상치(Box Plot 포함).
+            - **결측치 및 데이터 품질**: 결측치, 타입 오류 등 문제점 분석.
+
+            **특히, 주요 통계치 요약은 마크다운 테이블로 깔끔하게 정리해 주세요.**
+            **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
+
+            예시:
+            | 항목     | 평균   | 표준편차 |
+            |----------|--------|---------|
+            | hurdles  | 13.17  | 0.40    |
+            | highjump | 1.81   | 0.04    |
+            | shot     | 15.24  | 0.81    |
+            | run200m  | 23.43  | 0.59    |
+            | longjump | 6.65   | 0.42    |
+            | javelin  | 44.60  | 2.05    |
+            | run800m  | 127.79 | 3.00    |
+            | score    | 6825.20| 310.60  |
+
             전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘.
             """
             run_agent(auto_report_prompt, display_prompt=False)
