@@ -1,283 +1,325 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from typing import List, Union
 import os
-from typing import List, Union, Dict, Any
-
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import plotly.express as px
+import streamlit as st
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+from langchain_experimental.tools import PythonAstREPLTool
 from langchain_openai import ChatOpenAI
 from langchain_teddynote import logging
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_teddynote.messages import AgentStreamParser, AgentCallbacks
 
-# --- 1. 초기 설정 및 페이지 구성 ---
-st.set_page_config(
-    page_title="🤖 AI CSV 분석 챗봇",
-    page_icon="📊",
-    layout="wide",
-)
+# TeddyNote 로그
+logging.langsmith("CSV Agent 챗봇")
 
-# TeddyNote의 langsmith 로깅 (선택 사항)
-# logging.langsmith("CSV_Agent_Chatbot_v2")
+# Streamlit 앱 제목
+st.title("CSV 데이터 분석 챗봇 💬")
 
-# --- 2. 세션 상태 관리 ---
-def init_session_state():
-    """세션 상태 초기화"""
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = []
-    if "uploaded_files" not in st.session_state:
-        st.session_state["uploaded_files"] = {}  # 파일 이름과 데이터프레임을 저장
-    if "selected_file" not in st.session_state:
-        st.session_state["selected_file"] = None
-    if "df" not in st.session_state:
-        st.session_state["df"] = None
-    if "agent" not in st.session_state:
-        st.session_state["agent"] = None
-    if "chart_gallery" not in st.session_state:
-        st.session_state["chart_gallery"] = []
+# 세션 상태 초기화
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "df_list" not in st.session_state:
+    st.session_state["df_list"] = []
+if "file_names" not in st.session_state:
+    st.session_state["file_names"] = []
+if "agent" not in st.session_state:
+    st.session_state["agent"] = None
+if "python_tool" not in st.session_state:
+    st.session_state["python_tool"] = None
 
-# --- 3. LangChain Agent 및 콜백 핸들러 ---
-class StreamlitCallbackHandler(BaseCallbackHandler):
-    """Streamlit UI에 Agent의 중간 과정을 스트리밍하기 위한 콜백 핸들러"""
-    def on_llm_new_token(self, token: str, **kwargs) -> None:
-        st.session_state.container.markdown(token, unsafe_allow_html=True)
+# 상수 선언
 
-    def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> Any:
-        with st.status("코드 실행 중... 👨‍💻", expanded=True):
-            st.code(input_str, language="python")
+class MessageRole:
+    USER = "user"
+    ASSISTANT = "assistant"
 
-def create_agent(df: pd.DataFrame, api_key: str):
-    """Pandas DataFrame Agent 생성"""
-    if not api_key:
-        st.error("OpenAI API 키를 사이드바에 입력해주세요.")
+class MessageType:
+    TEXT = "text"
+    FIGURE = "figure"
+    CODE = "code"
+    DATAFRAME = "dataframe"
+
+# 메시지 출력 함수
+def print_messages():
+    for role, content_list in st.session_state["messages"]:
+        with st.chat_message(role):
+            for content in content_list:
+                if isinstance(content, list):
+                    message_type, message_content = content
+                    if message_type == MessageType.TEXT:
+                        st.markdown(message_content)
+                    elif message_type == MessageType.FIGURE:
+                        st.pyplot(message_content)
+                    elif message_type == MessageType.CODE:
+                        with st.expander("코드 보기"):
+                            st.code(message_content, language="python")
+                    elif message_type == MessageType.DATAFRAME:
+                        st.dataframe(message_content)
+                    else:
+                        raise ValueError(f"알 수 없는 콘텐츠 유형: {content}")
+
+# 메시지 추가 함수
+def add_message(role: MessageRole, content: List[Union[MessageType, str]]):
+    messages = st.session_state["messages"]
+    if messages and messages[-1][0] == role:
+        messages[-1][1].extend([content])
+    else:
+        messages.append([role, [content]])
+
+# API 키 입력 및 파일 업로드 UI
+with st.sidebar:
+    st.markdown("🔑 **OpenAI API 키를 입력하세요**")
+    user_api_key = st.text_input("OpenAI API Key", type="password")
+    clear_btn = st.button("대화 초기화")
+    uploaded_files = st.file_uploader("CSV 파일들을 업로드 해주세요 (다중 업로드 지원)", type=["csv"], accept_multiple_files=True)
+    pre_process_option = st.checkbox("결측치 제거", value=False)
+    outlier_detect_option = st.checkbox("이상치 자동 탐지", value=False)
+    apply_btn = st.button("데이터 분석 시작")
+
+# API 키 환경 변수 설정
+if user_api_key:
+    os.environ["OPENAI_API_KEY"] = user_api_key
+
+# 초기화 버튼
+if clear_btn:
+    st.session_state["messages"] = []
+    st.session_state["df_list"] = []
+    st.session_state["file_names"] = []
+    st.session_state["agent"] = None
+    st.session_state["python_tool"] = None
+    st.experimental_rerun()
+
+# 전처리: 결측치 처리 및 이상치 탐지
+def preprocess_df(df, drop_na=False, outlier_detect=False):
+    info_msgs = []
+    # 결측치 제거
+    if drop_na:
+        before_shape = df.shape
+        df = df.dropna()
+        info_msgs.append(f"결측치 제거 수행. {before_shape} → {df.shape}")
+    # 이상치 탐지 - z-score 기반
+    if outlier_detect:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) == 0:
+            info_msgs.append("숫자형 컬럼이 없어 이상치 탐지를 수행할 수 없습니다.")
+            return df, info_msgs
+        from scipy.stats import zscore
+        z_scores = np.abs(zscore(df[numeric_cols], nan_policy='omit'))
+        threshold = 3
+        outliers = (z_scores > threshold).any(axis=1)
+        num_outliers = outliers.sum()
+        info_msgs.append(f"이상치로 감지된 행 수: {num_outliers}")
+        df_clean = df.loc[~outliers]
+        info_msgs.append(f"이상치 제거 후 데이터 크기: {df_clean.shape}")
+        return df_clean, info_msgs
+    return df, info_msgs
+
+# 자동 데이터 개요 출력
+def auto_data_overview(df, name=None):
+    st.subheader(f"{name or '데이터'} 기본 개요 및 통계")
+    st.write(f"행렬 크기: {df.shape}")
+    st.write("데이터 타입:")
+    st.write(df.dtypes)
+    st.write("결측치 개수:")
+    st.write(df.isnull().sum())
+    st.write("기본 기술통계:")
+    st.write(df.describe(include='all'))
+    st.markdown("---")
+
+# 자동 변수별 시각화 추천 및 출력 (Plotly)
+def auto_visualization(df, name="데이터"):
+    st.subheader(f"{name} 자동 시각화")
+    for col in df.columns:
+        # 수치형
+        if pd.api.types.is_numeric_dtype(df[col]):
+            fig = px.histogram(df, x=col, nbins=30, title=f"{col} 분포 (Histogram)")
+        # 날짜형
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            # 숫자형 숫자 컬럼 선택 (최초 발견)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            if numeric_cols:
+                y_col = numeric_cols[0]
+                fig = px.line(df.sort_values(by=col), x=col, y=y_col, title=f"{col} vs {y_col} (Line Plot)")
+            else:
+                continue
+        # 범주형
+        else:
+            counts = df[col].value_counts().reset_index()
+            counts.columns = [col, "count"]
+            fig = px.bar(counts, x=col, y="count", title=f"{col} 빈도 (Bar Chart)")
+        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
+
+# 다중 파일 비교 간단 예시: shape, 컬럼명 차이 시각화
+def multi_file_summary(df_list, file_names):
+    st.subheader("업로드된 데이터 파일 요약 및 비교")
+    summary = []
+    for i, df in enumerate(df_list):
+        summary.append({
+            "파일명": file_names[i],
+            "행(row)": df.shape[0],
+            "열(column)": df.shape[1],
+            "컬럼명": ", ".join(df.columns)
+        })
+    df_summary = pd.DataFrame(summary)
+    st.table(df_summary)
+
+    # 컬럼명 비교
+    all_columns = [set(df.columns) for df in df_list]
+    common_cols = set.intersection(*all_columns)
+    unique_cols = [set(df.columns) - common_cols for df in df_list]
+    
+    st.write(f"공통 컬럼: {sorted(common_cols)}")
+    for i, uc in enumerate(unique_cols):
+        st.write(f"{file_names[i]} 고유 컬럼: {sorted(uc)}")
+    st.markdown("---")
+
+# Langchain Agent 생성
+def create_agent(dataframe, selected_model="gpt-4.1-mini"):
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        st.error("OpenAI API 키를 입력해주세요 (사이드바)")
         return None
-    
-    prompt = """
-    당신은 최고의 데이터 분석가이자 파이썬 전문가입니다. 'df'라는 이름의 Pandas DataFrame을 사용하여 사용자의 질문에 답변해야 합니다.
-    
-    주요 지침:
-    1.  **시각화**: 시각화 요청 시, 반드시 **Plotly**를 사용하세요. Matplotlib 이나 Seaborn은 사용하지 마세요.
-        -   `import plotly.express as px` 또는 `import plotly.graph_objects as go`를 사용하세요.
-        -   생성된 Plotly Figure 객체는 코드 블록의 마지막 줄에 위치시켜야 반환됩니다. 예: `fig = px.bar(...)`, `fig`
-        -   차트의 제목, 축 레이블 등은 `English`로 작성해주세요.
-        -   `template='plotly_white'`를 사용하여 깔끔한 배경을 만드세요.
-    2.  **코드 실행**: 제공된 `df`를 직접 수정하는 코드(예: `df = ...`)는 절대 생성하지 마세요.
-    3.  **답변**: 모든 최종 답변은 반드시 **'한국어'**로 제공해야 합니다. 코드 실행 결과(데이터프레임, 차트 등)를 바탕으로 상세하고 친절하게 설명해주세요.
-    4.  **데이터 탐색**: 사용자가 데이터에 대해 물어보면 `df.columns`, `df.head()`, `df.info()`, `df.describe()` 등을 활용하여 정확한 정보를 제공하세요.
-    """
-    
     return create_pandas_dataframe_agent(
-        llm=ChatOpenAI(model="gpt-4-turbo", temperature=0, openai_api_key=api_key, streaming=True),
-        df=df,
-        agent_type="openai-tools",
-        verbose=True,
-        prompt=prompt,
+        ChatOpenAI(model=selected_model, temperature=0, api_key=openai_key),
+        dataframe,
+        verbose=False,
+        agent_type="tool-calling",
         allow_dangerous_code=True,
+        prefix=(
+            "You are a professional data analyst and expert in Pandas. "
+            "You must use Pandas DataFrame(`df`) to answer user's request. "
+            "\n\n[IMPORTANT] DO NOT create or overwrite the `df` variable in your code. \n\n"
+            "If you are willing to generate visualization code, you must use fig, ax = plt.subplots() and st.pyplot(fig) to show the figure in Streamlit. "
+            "Prefer seaborn code for visualization, but matplotlib is also allowed."
+            "\n\n\n"
+            "- [IMPORTANT] Use `English` for your visualization title and labels."
+            "- Please use palette='muted' for seaborn (not cmap), and for matplotlib use a valid colormap (for example, 'viridis')."
+            "- White background, and no grid for your visualization."
+            "\nRecommend to set cmap, palette parameter for seaborn plot if applicable. "
+            "The language of final answer should be Korean."
+            "\n\n###\n\n\n"
+            "If user asks with columns that are not listed in `df.columns`, you may refer to the most similar columns listed below.\n"
+        ),
     )
 
-# --- 4. UI 컴포넌트 및 기능 함수 ---
+# Agent용 콜백 함수 (기존 동일)
+def tool_callback(tool) -> None:
+    if tool_name := tool.get("tool"):
+        if tool_name == "python_repl_ast":
+            tool_input = tool.get("tool_input", {})
+            query = tool_input.get("query")
+            if query:
+                df_in_result = None
+                with st.status("데이터 분석 중...", expanded=True) as status:
+                    add_message(MessageRole.ASSISTANT, [MessageType.CODE, query])
+                    if "df" in st.session_state:
+                        sns.set_theme(style="white")
+                        st.session_state["python_tool"].locals["pd"] = pd
+                        st.session_state["python_tool"].locals["sns"] = sns
+                        st.session_state["python_tool"].locals["plt"] = plt
+                        try:
+                            result = st.session_state["python_tool"].invoke({"query": query})
+                        except Exception as e:
+                            st.error(f"오류 발생: {e}")
+                            return
+                        if isinstance(result, pd.DataFrame):
+                            df_in_result = result
+                        status.update(label="코드 출력", state="complete", expanded=False)
+                        if df_in_result is not None:
+                            st.dataframe(df_in_result)
+                            add_message(MessageRole.ASSISTANT, [MessageType.DATAFRAME, df_in_result])
+                        if "plt.show" in query or "st.pyplot" in query:
+                            fig = plt.gcf()
+                            st.pyplot(fig)
+                            add_message(MessageRole.ASSISTANT, [MessageType.FIGURE, fig])
+                        return result
+                    else:
+                        st.error("데이터프레임이 정의되지 않았습니다. CSV 파일을 먼저 업로드해주세요.")
+                        return
 
-def display_dashboard(df: pd.DataFrame):
-    """업로드된 데이터에 대한 자동 분석 대시보드 표시"""
-    st.subheader("📊 데이터 대시보드")
-    
-    if df is None:
-        st.warning("먼저 사이드바에서 CSV 파일을 업로드하고 선택해주세요.")
-        return
+def observation_callback(observation) -> None:
+    if "observation" in observation:
+        obs = observation["observation"]
+        if isinstance(obs, str) and "Error" in obs:
+            st.error(obs)
+            st.session_state["messages"][-1][1].clear()
 
-    # 1. 데이터 개요
-    st.markdown("### 1. 데이터 개요 (Overview)")
-    st.dataframe(df.head())
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("전체 행 수", f"{df.shape[0]:,}")
-    with col2:
-        st.metric("전체 열 수", f"{df.shape[1]:,}")
+def result_callback(result: str) -> None:
+    pass
 
-    st.markdown("### 2. 데이터 정보 (Data Types & Memory)")
-    buffer = pd.io.common.StringIO()
-    df.info(buf=buffer)
-    st.text(buffer.getvalue())
+# 사용자 질문 처리 함수
+def ask(query):
+    if "agent" in st.session_state and st.session_state["agent"]:
+        st.chat_message("user").write(query)
+        add_message(MessageRole.USER, [MessageType.TEXT, query])
+        agent = st.session_state["agent"]
+        response = agent.stream({"input": query})
+        ai_answer = ""
+        parser_callback = AgentCallbacks(tool_callback, observation_callback, result_callback)
+        stream_parser = AgentStreamParser(parser_callback)
+        with st.chat_message("assistant"):
+            for step in response:
+                stream_parser.process_agent_steps(step)
+                if "output" in step:
+                    ai_answer += step["output"]
+            st.write(ai_answer)
+            add_message(MessageRole.ASSISTANT, [MessageType.TEXT, ai_answer])
 
-    # 3. 기본 통계
-    st.markdown("### 3. 기본 통계 (Descriptive Statistics)")
-    st.dataframe(df.describe().transpose())
-    
-    # 4. 결측치 분석
-    st.markdown("### 4. 결측치 분석 (Missing Values)")
-    missing_data = df.isnull().sum()
-    missing_data = missing_data[missing_data > 0]
-    if not missing_data.empty:
-        fig = px.bar(missing_data, x=missing_data.index, y=missing_data.values,
-                     title="결측치 개수", labels={'x': '컬럼', 'y': '결측치 수'},
-                     template='plotly_white')
-        st.plotly_chart(fig, use_container_width=True)
+# 업로드 후 처리 및 분석 시작
+if apply_btn:
+    if not user_api_key:
+        st.warning("OpenAI API 키를 입력해주세요.")
+    elif not uploaded_files or len(uploaded_files) == 0:
+        st.warning("파일을 업로드 해주세요.")
     else:
-        st.success("🎉 데이터에 결측치가 없습니다!")
+        # 여러 파일 처리
+        dfs = []
+        names = []
+        preprocess_infos = []
+        for file in uploaded_files:
+            df_load = pd.read_csv(file)
+            df_processed, info_msgs = preprocess_df(df_load, drop_na=pre_process_option, outlier_detect=outlier_detect_option)
+            dfs.append(df_processed)
+            names.append(file.name)
+            preprocess_infos.append((file.name, info_msgs))
 
-    # 5. 데이터 타입별 분포 시각화 (자동 차트 추천)
-    st.markdown("### 5. 데이터 분포 (Data Distribution)")
-    numeric_cols = df.select_dtypes(include=['number']).columns
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-
-    if len(numeric_cols) > 0:
-        st.markdown("#### 🔹 수치형 데이터 (Numeric)")
-        selected_numeric = st.selectbox("분포를 확인할 수치형 컬럼을 선택하세요.", options=numeric_cols)
-        fig_hist = px.histogram(df, x=selected_numeric, title=f"'{selected_numeric}' 컬럼 분포", template='plotly_white')
-        st.plotly_chart(fig_hist, use_container_width=True)
-    
-    if len(categorical_cols) > 0:
-        st.markdown("#### 🔹 범주형 데이터 (Categorical)")
-        selected_categorical = st.selectbox("분포를 확인할 범주형 컬럼을 선택하세요.", options=categorical_cols)
-        fig_bar = px.bar(df[selected_categorical].value_counts(), title=f"'{selected_categorical}' 컬럼 분포", template='plotly_white')
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-
-def display_chat_history():
-    """채팅 기록 표시"""
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            if msg["type"] == "text":
-                st.markdown(msg["content"])
-            elif msg["type"] == "dataframe":
-                st.dataframe(msg["content"])
-            elif msg["type"] == "figure":
-                st.plotly_chart(msg["content"], use_container_width=True)
-
-def add_message(role, content, msg_type="text"):
-    """세션에 메시지 추가"""
-    st.session_state.messages.append({"role": role, "content": content, "type": msg_type})
-
-def run_agent(query: str, display_prompt: bool = True):
-    """에이전트를 실행하고 결과를 처리. display_prompt로 프롬프트 표시 여부 제어"""
-    if st.session_state.agent is None:
-        st.error("에이전트가 초기화되지 않았습니다. API 키를 확인하고 파일을 다시 업로드해주세요.")
-        return
-
-    if display_prompt:
-        add_message("user", query)
-        st.chat_message("user").markdown(query)
-
-    with st.chat_message("assistant"):
-        st.session_state.container = st.empty() # 스트리밍 출력을 위한 컨테이너
+        st.session_state["df_list"] = dfs
+        st.session_state["file_names"] = names
         
-        try:
-            response = st.session_state.agent.invoke(
-                {"input": query},
-                {"callbacks": [StreamlitCallbackHandler()]}
-            )
-            
-            final_answer = response.get("output", "죄송합니다, 답변을 생성하지 못했습니다.")
-            intermediate_steps = response.get("intermediate_steps", [])
+        # 기본 개요 & 전처리 안내
+        for name, msgs in preprocess_infos:
+            if msgs:
+                st.write(f"**[{name}] 전처리 정보:**")
+                for msg in msgs:
+                    st.write("- " + msg)
 
-            for step in intermediate_steps:
-                tool_output = step[1]
-                if isinstance(tool_output, go.Figure):
-                    st.plotly_chart(tool_output, use_container_width=True)
-                    add_message("assistant", tool_output, "figure")
-                    st.session_state.chart_gallery.append(tool_output)
-                elif isinstance(tool_output, pd.DataFrame):
-                    st.dataframe(tool_output)
-                    add_message("assistant", tool_output, "dataframe")
+        # 다중 파일 요약 및 비교
+        multi_file_summary(dfs, names)
 
-            add_message("assistant", final_answer, "text")
+        # 각 파일별 자동 분석 및 시각화
+        for i, df_single in enumerate(dfs):
+            auto_data_overview(df_single, names[i])
+            auto_visualization(df_single, names[i])
 
-        except Exception as e:
-            error_message = f"오류가 발생했습니다: {e}"
-            st.error(error_message)
-            add_message("assistant", error_message)
+        # Agent는 첫번째 데이터프레임 기준 생성 (추후 병합도 가능)
+        st.session_state["python_tool"] = PythonAstREPLTool()
+        st.session_state["python_tool"].locals["pd"] = pd
+        st.session_state["python_tool"].locals["sns"] = sns
+        st.session_state["python_tool"].locals["plt"] = plt
+        st.session_state["python_tool"].locals["df"] = dfs[0]  # 기본 df 지정
+        st.session_state["agent"] = create_agent(dfs[0])
 
+        st.success("데이터 분석이 완료되었습니다. 궁금한 내용을 물어보세요!")
 
-# --- 5. 메인 앱 실행 로직 ---
-def main():
-    init_session_state()
+# 메시지 출력
+print_messages()
 
-    st.title("🤖 AI CSV 분석 챗봇 (v2.0)")
-    st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
-
-    # 사이드바
-    with st.sidebar:
-        st.header("설정")
-        api_key = st.text_input("🔑 OpenAI API Key", type="password", key="api_key_input")
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
-
-        uploaded_files = st.file_uploader(
-            "📁 CSV 파일 업로드", type=["csv"], accept_multiple_files=True
-        )
-
-        if uploaded_files:
-            for file in uploaded_files:
-                if file.name not in st.session_state.uploaded_files:
-                    st.session_state.uploaded_files[file.name] = pd.read_csv(file)
-            
-            file_names = list(st.session_state.uploaded_files.keys())
-            st.session_state.selected_file = st.selectbox("분석할 파일을 선택하세요.", options=file_names)
-            
-            if st.session_state.selected_file:
-                st.session_state.df = st.session_state.uploaded_files[st.session_state.selected_file]
-
-        if st.button("🔄️ 대화 초기화"):
-            st.session_state.messages = []
-            st.session_state.chart_gallery = []
-            st.rerun()
-
-    # 에이전트 생성 (파일이 변경될 때마다)
-    if st.session_state.df is not None and (st.session_state.agent is None or "df_name" not in st.session_state or st.session_state.df_name != st.session_state.selected_file):
-        with st.spinner("AI 에이전트를 준비하는 중입니다..."):
-            st.session_state.agent = create_agent(st.session_state.df, os.environ.get("OPENAI_API_KEY", ""))
-            st.session_state.df_name = st.session_state.selected_file # 현재 df 이름 저장
-            st.toast(f"✅ '{st.session_state.selected_file}' 파일로 에이전트가 준비되었습니다!")
-
-
-    # 메인 콘텐츠 영역 (탭)
-    tab1, tab2, tab3 = st.tabs(["💬 AI 챗봇", "📊 데이터 대시보드", "🖼️ 차트 갤러리"])
-
-    with tab2:
-        display_dashboard(st.session_state.df)
-
-    with tab3:
-        st.subheader("🖼️ 생성된 차트 모음")
-        if not st.session_state.chart_gallery:
-            st.info("아직 생성된 차트가 없습니다. AI 챗봇에게 시각화를 요청해보세요.")
-        else:
-            for i, chart in enumerate(st.session_state.chart_gallery):
-                st.plotly_chart(chart, use_container_width=True)
-                st.divider()
-
-    with tab1:
-        st.subheader("💬 AI에게 데이터에 대해 질문해보세요")
-        
-        # 자동 분석 버튼
-        if st.button("🤖 AI 자동 리포트 생성"):
-            # AI에게 전달할 프롬프트. 리포트 제목을 마크다운으로 명시.
-            auto_report_prompt = """
-            ## 탐색적 데이터 분석(EDA) 리포트
-
-            업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
-
-            리포트에는 다음 내용이 반드시 포함되어야 해:
-            1.  **데이터 요약**: 데이터의 전체적인 크기, 컬럼 수, 주요 통계치에 대한 요약.
-            2.  **핵심 인사이트**: 데이터를 분석하여 발견한 가장 중요한 비즈니스 또는 데이터 인사이트 3가지.
-            3.  **상관 관계 분석**: 수치형 변수들 간의 상관 관계를 분석하고, 가장 강한 양의 상관관계와 음의 상관관계를 보이는 변수 쌍을 설명해줘. 히트맵 시각화도 함께 생성해줘.
-            4.  **이상치(Outlier) 분석**: 주요 수치형 컬럼에서 잠재적인 이상치가 있는지 분석하고, 있다면 어떤 값인지 알려줘. Box Plot 시각화를 1개 생성해서 보여주면 좋아.
-            5.  **데이터 품질 문제**: 결측치나 데이터 타입 오류 등 잠재적인 데이터 품질 문제를 언급하고, 간단한 해결 방안을 제안해줘.
-
-            위 내용을 바탕으로 전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘.
-            """
-            # display_prompt=False로 설정하여 프롬프트가 화면에 보이지 않게 함
-            run_agent(auto_report_prompt, display_prompt=False)
-
-        st.divider()
-
-        # 채팅 기록 표시
-        display_chat_history()
-
-        # 사용자 입력
-        if prompt := st.chat_input("데이터에 대해 질문을 입력하세요..."):
-            run_agent(prompt)
-
-if __name__ == "__main__":
-    main()
+# 사용자 입력 처리
+user_input = st.chat_input("궁금한 내용을 물어보세요!")
+if user_input:
+    ask(user_input)
+    print_messages()
