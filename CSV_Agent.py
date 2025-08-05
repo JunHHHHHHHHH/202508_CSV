@@ -1,25 +1,17 @@
-from typing import List, Union
-from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
-from langchain_experimental.tools import PythonAstREPLTool
-from langchain_openai import ChatOpenAI
-from langchain_teddynote import logging
-from langchain_teddynote.messages import AgentStreamParser, AgentCallbacks
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+from typing import List, Union, Dict, Any
 
-# TeddyNote의 langsmith 로깅
-logging.langsmith("CSV Agent 챗봇")
+from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
+from langchain_experimental.tools import PythonAstREPLTool
+from langchain_openai import ChatOpenAI
 
-# Streamlit 앱 설정
-st.title("CSV 데이터 분석 챗봇 💬")
-
-# 세션 상태 초기화
+# --- 세션 상태 및 상수 초기화 ---
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
-# 상수 정의
 class MessageRole:
     USER = "user"
     ASSISTANT = "assistant"
@@ -30,148 +22,155 @@ class MessageType:
     CODE = "code"
     DATAFRAME = "dataframe"
 
+# --- 사이드바 설정 ---
+with st.sidebar:
+    st.markdown("### 🔑 OpenAI API 키")
+    user_api_key = st.text_input("OpenAI API Key", type="password", help="API 키를 입력하세요.")
+
+    st.markdown("### 📄 CSV 파일 업로드")
+    uploaded_file = st.file_uploader(
+        "분석할 CSV 파일을 업로드 해주세요.", type=["csv"]
+    )
+
+    st.markdown("---")
+    apply_btn = st.button("✓ 데이터 분석 시작", use_container_width=True)
+    clear_btn = st.button("↻ 대화 초기화", use_container_width=True)
+
+# --- 메인 화면 ---
+st.title(" CSV 데이터 분석 챗봇 💬")
+st.markdown("`pandas-ai`와 `LangChain` 에이전트를 사용하여 CSV 파일의 데이터를 분석하고 시각화합니다.")
+
 def print_messages():
+    """세션에 저장된 메시지를 순서대로 출력합니다."""
     for role, content_list in st.session_state["messages"]:
         with st.chat_message(role):
-            for content in content_list:
-                if isinstance(content, list):
-                    message_type, message_content = content
-                    if message_type == MessageType.TEXT:
-                        st.markdown(message_content)
-                    elif message_type == MessageType.FIGURE:
-                        st.pyplot(message_content)
-                    elif message_type == MessageType.CODE:
-                        with st.status("코드 출력", expanded=False):
-                            st.code(message_content, language="python")
-                    elif message_type == MessageType.DATAFRAME:
-                        st.dataframe(message_content)
-                else:
-                    raise ValueError(f"알 수 없는 콘텐츠 유형: {content}")
+            for content_type, content_value in content_list:
+                if content_type == MessageType.TEXT:
+                    st.markdown(content_value)
+                elif content_type == MessageType.FIGURE:
+                    st.pyplot(content_value)
+                elif content_type == MessageType.CODE:
+                    with st.expander("실행된 코드 보기", expanded=False):
+                        st.code(content_value, language="python")
+                elif content_type == MessageType.DATAFRAME:
+                    st.dataframe(content_value)
 
-def add_message(role: MessageRole, content: List[Union[MessageType, str]]):
-    messages = st.session_state["messages"]
-    if messages and messages[-1][0] == role:
-        messages[-1][1].extend([content])
-    else:
-        messages.append([role, [content]])
+def add_message(role: str, content: List[Union[str, Any]]):
+    """메시지를 세션 상태에 추가합니다."""
+    # content는 [type, value] 형태의 리스트
+    st.session_state.messages.append([role, [content]])
 
-# 사이드바 설정
-with st.sidebar:
-    st.markdown("🔑 **OpenAI API 키를 입력하세요**")
-    user_api_key = st.text_input("OpenAI API Key", type="password")
-    clear_btn = st.button("대화 초기화")
-    uploaded_file = st.file_uploader(
-        "CSV 파일을 업로드 해주세요.", type=["csv"], accept_multiple_files=False
-    )
-    apply_btn = st.button("데이터 분석 시작")
 
-# API Key 처리
-if user_api_key:
-    os.environ["OPENAI_API_KEY"] = user_api_key
-
-def tool_callback(tool) -> None:
-    if tool_name := tool.get("tool"):
-        if tool_name == "python_repl_ast":
-            tool_input = tool.get("tool_input", {})
-            query = tool_input.get("query")
-            if query:
-                df_in_result = None
-                with st.status("데이터 분석 중...", expanded=True) as status:
-                    st.markdown(f"``````")
-                    add_message(MessageRole.ASSISTANT, [MessageType.CODE, query])
-                    if "df" in st.session_state:
-                        result = st.session_state["python_tool"].invoke({"query": query})
-                        if isinstance(result, pd.DataFrame):
-                            df_in_result = result
-                    status.update(label="코드 출력", state="complete", expanded=False)
-                if df_in_result is not None:
-                    st.dataframe(df_in_result)
-                    add_message(MessageRole.ASSISTANT, [MessageType.DATAFRAME, df_in_result])
-                if "plt.show" in query:
-                    fig = plt.gcf()
-                    st.pyplot(fig)
-                    add_message(MessageRole.ASSISTANT, [MessageType.FIGURE, fig])
-                return result
-            else:
-                st.error("데이터프레임이 정의되지 않았습니다. CSV 파일을 먼저 업로드해주세요.")
-                return
-
-def observation_callback(observation) -> None:
-    if "observation" in observation:
-        obs = observation["observation"]
-        if isinstance(obs, str) and "Error" in obs:
-            st.error(obs)
-            st.session_state["messages"][-1][1].clear()
-
-def result_callback(result: str) -> None:
-    pass
-
-def create_agent(dataframe, selected_model="gpt-4.1-mini"):
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if not openai_key:
-        st.error("OpenAI API 키를 입력해주세요 (사이드바)")
+def create_agent(dataframe: pd.DataFrame, api_key: str):
+    """Pandas DataFrame을 다루는 LangChain 에이전트를 생성합니다."""
+    try:
+        llm = ChatOpenAI(
+            model="gpt-4-turbo", # 필요시 모델 변경 (e.g., gpt-4, gpt-4.1-mini)
+            temperature=0,
+            api_key=api_key
+        )
+        tool = PythonAstREPLTool(locals={"df": dataframe})
+        return create_pandas_dataframe_agent(
+            llm=llm,
+            df=dataframe,
+            agent_executor_kwargs={"handle_parsing_errors": True},
+            verbose=False,
+            agent_type="tool-calling",
+            allow_dangerous_code=True,
+            prefix=(
+                "You are a professional data analyst and expert in Pandas. "
+                "You must use the Pandas DataFrame `df` to answer the user's request. "
+                "\n\n[IMPORTANT] DO NOT create or overwrite the `df` variable in your code. \n\n"
+                "If you generate visualization code, please use `plt.show()` at the end. "
+                "I prefer seaborn for visualization, but matplotlib is also fine."
+                "\n\n<Visualization Preference>\n"
+                "- [IMPORTANT] Use `English` for your visualization title and labels."
+                "- Use a `muted` color palette, white background, and no grid."
+                "\nRecommend setting cmap or palette for seaborn plots. "
+                "The final answer should be in Korean."
+                "\n\n###\n\n<Column Guidelines>\n"
+                "If the user asks about columns not in `df.columns`, you may refer to the most similar columns listed."
+            ),
+            tools=[tool]
+        )
+    except Exception as e:
+        st.error(f"에이전트 생성 중 오류가 발생했습니다: {e}")
         return None
-    return create_pandas_dataframe_agent(
-        ChatOpenAI(model=selected_model, temperature=0, api_key=openai_key),
-        dataframe,
-        verbose=False,
-        agent_type="tool-calling",
-        allow_dangerous_code=True,
-        prefix=(
-            "You are a professional data analyst and expert in Pandas. "
-            "You must use Pandas DataFrame(`df`) to answer user's request. "
-            "\n\n[IMPORTANT] DO NOT create or overwrite the `df` variable in your code. \n\n"
-            "If you are willing to generate visualization code, please use `plt.show()` at the end of your code. "
-            "I prefer seaborn code for visualization, but you can use matplotlib as well."
-            "\n\n<Visualization Preference>\n"
-            "- [IMPORTANT] Use `English` for your visualization title and labels."
-            "- `muted` cmap, white background, and no grid for your visualization."
-            "\nRecommend to set cmap, palette parameter for seaborn plot if it is applicable. "
-            "The language of final answer should be written in Korean. "
-            "\n\n###\n\n<Column Guidelines>\n"
-            "If user asks with columns that are not listed in `df.columns`, you may refer to the most similar columns listed below.\n"
-        ),
-    )
 
-def ask(query):
-    if "agent" in st.session_state:
-        st.chat_message("user").write(query)
-        add_message(MessageRole.USER, [MessageType.TEXT, query])
-
-        agent = st.session_state["agent"]
-        response = agent.stream({"input": query})
-
-        ai_answer = ""
-        parser_callback = AgentCallbacks(tool_callback, observation_callback, result_callback)
-        stream_parser = AgentStreamParser(parser_callback)
-
-        with st.chat_message("assistant"):
-            for step in response:
-                stream_parser.process_agent_steps(step)
-                if "output" in step:
-                    ai_answer += step["output"]
-            st.write(ai_answer)
-        add_message(MessageRole.ASSISTANT, [MessageType.TEXT, ai_answer])
-
+# --- 버튼 로직 처리 ---
 if clear_btn:
     st.session_state["messages"] = []
+    st.rerun()
 
 if apply_btn:
     if not user_api_key:
-        st.warning("OpenAI API 키를 입력해주세요.")
+        st.warning("사이드바에 OpenAI API 키를 입력해주세요.")
     elif not uploaded_file:
-        st.warning("파일을 업로드 해주세요.")
+        st.warning("분석할 CSV 파일을 업로드해주세요.")
     else:
-        loaded_data = pd.read_csv(uploaded_file)
-        st.session_state["df"] = loaded_data
-        st.session_state["python_tool"] = PythonAstREPLTool()
-        st.session_state["python_tool"].locals["df"] = loaded_data
-        st.session_state["agent"] = create_agent(loaded_data)  # 모델 파라미터 없이 호출해서 기본값("gpt-4.1-mini") 사용
-        st.success("설정이 완료되었습니다. 대화를 시작해 주세요!")
+        with st.spinner("데이터를 설정하는 중입니다..."):
+            loaded_data = pd.read_csv(uploaded_file)
+            st.session_state["df"] = loaded_data
+            st.session_state["agent"] = create_agent(loaded_data, user_api_key)
+        if st.session_state["agent"]:
+            st.success("설정이 완료되었습니다. 이제 질문을 시작하세요!")
+            st.dataframe(loaded_data.head())
 
+
+# 저장된 메시지 출력
 print_messages()
 
-user_input = st.chat_input("궁금한 내용을 물어보세요!")
-if user_input:
-    ask(user_input)
+# --- 사용자 입력 및 에이전트 실행 ---
+if user_input := st.chat_input("데이터에 대해 궁금한 점을 질문하세요!"):
+    if "agent" not in st.session_state:
+        st.warning("먼저 사이드바에서 API 키와 CSV 파일을 설정하고 '데이터 분석 시작' 버튼을 눌러주세요.")
+    else:
+        # 사용자 질문을 메시지에 추가하고 화면에 표시
+        add_message(MessageRole.USER, [MessageType.TEXT, user_input])
+        st.chat_message(MessageRole.USER).write(user_input)
+
+        with st.chat_message(MessageRole.ASSISTANT):
+            # 스트리밍 출력을 처리할 컨테이너
+            response_container = st.container()
+            final_answer = ""
+
+            # 에이전트 스트리밍 실행
+            response_stream = st.session_state.agent.stream({"input": user_input})
+
+            for chunk in response_stream:
+                # 파이썬 코드 실행 블록 (Tool 사용)
+                if "actions" in chunk:
+                    for action in chunk["actions"]:
+                        tool_input = action.tool_input
+                        if isinstance(tool_input, dict) and "query" in tool_input:
+                            code = tool_input["query"]
+                            with st.status("코드 실행 중...", expanded=True) as status:
+                                status.write("생성된 코드를 실행하고 있습니다.")
+                                st.code(code, language="python")
+                                # 실행된 코드를 메시지에 추가
+                                add_message(MessageRole.ASSISTANT, [MessageType.CODE, code])
+                                status.update(label="실행 완료!", state="complete")
+
+                # 코드 실행 결과 (Observation)
+                elif "steps" in chunk:
+                    for step in chunk["steps"]:
+                        observation = step.observation
+                        if "Error" in str(observation):
+                            st.error(f"코드 실행 중 오류가 발생했습니다:\n{observation}")
+                            add_message(MessageRole.ASSISTANT, [MessageType.TEXT, f"**오류 발생**:\n```\n{observation}\n```"])
+                        # 시각화 결과 처리
+                        if plt.get_fignums():
+                            fig = plt.gcf()
+                            st.pyplot(fig)
+                            add_message(MessageRole.ASSISTANT, [MessageType.FIGURE, fig])
+                            plt.clf() # 다음 시각화를 위해 현재 figure를 초기화
+
+                # 최종 답변
+                elif "output" in chunk:
+                    final_answer += chunk["output"]
+                    response_container.markdown(final_answer)
+
+            # 최종 답변을 메시지에 저장
+            if final_answer:
+                 st.session_state.messages.append([MessageRole.ASSISTANT, [[MessageType.TEXT, final_answer]]])
 
