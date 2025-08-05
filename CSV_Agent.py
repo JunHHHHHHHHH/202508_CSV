@@ -150,14 +150,15 @@ def add_message(role, content, msg_type="text"):
     """세션에 메시지 추가"""
     st.session_state.messages.append({"role": role, "content": content, "type": msg_type})
 
-def run_agent(query: str):
-    """에이전트를 실행하고 결과를 처리"""
+def run_agent(query: str, display_prompt: bool = True):
+    """에이전트를 실행하고 결과를 처리. display_prompt로 프롬프트 표시 여부 제어"""
     if st.session_state.agent is None:
         st.error("에이전트가 초기화되지 않았습니다. API 키를 확인하고 파일을 다시 업로드해주세요.")
         return
 
-    add_message("user", query)
-    st.chat_message("user").markdown(query)
+    if display_prompt:
+        add_message("user", query)
+        st.chat_message("user").markdown(query)
 
     with st.chat_message("assistant"):
         st.session_state.container = st.empty() # 스트리밍 출력을 위한 컨테이너
@@ -168,11 +169,9 @@ def run_agent(query: str):
                 {"callbacks": [StreamlitCallbackHandler()]}
             )
             
-            # response 딕셔너리에서 최종 답변과 중간 결과(차트, df)를 분리
             final_answer = response.get("output", "죄송합니다, 답변을 생성하지 못했습니다.")
             intermediate_steps = response.get("intermediate_steps", [])
 
-            # 중간 단계에서 생성된 객체(Plotly Figure, DataFrame) 처리
             for step in intermediate_steps:
                 tool_output = step[1]
                 if isinstance(tool_output, go.Figure):
@@ -183,8 +182,6 @@ def run_agent(query: str):
                     st.dataframe(tool_output)
                     add_message("assistant", tool_output, "dataframe")
 
-            # 최종 텍스트 답변 표시
-            # st.session_state.container.markdown(final_answer) # 이미 스트리밍 콜백에서 처리됨
             add_message("assistant", final_answer, "text")
 
         except Exception as e:
@@ -255,7 +252,10 @@ def main():
         
         # 자동 분석 버튼
         if st.button("🤖 AI 자동 리포트 생성"):
+            # AI에게 전달할 프롬프트. 리포트 제목을 마크다운으로 명시.
             auto_report_prompt = """
+            ## 탐색적 데이터 분석(EDA) 리포트
+
             업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
 
             리포트에는 다음 내용이 반드시 포함되어야 해:
@@ -267,7 +267,8 @@ def main():
 
             위 내용을 바탕으로 전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘.
             """
-            run_agent(auto_report_prompt)
+            # display_prompt=False로 설정하여 프롬프트가 화면에 보이지 않게 함
+            run_agent(auto_report_prompt, display_prompt=False)
 
         st.divider()
 
