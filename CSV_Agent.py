@@ -82,9 +82,7 @@ def tool_callback(tool) -> None:
                     add_message(MessageRole.ASSISTANT, [MessageType.CODE, query])
 
                     if "df" in st.session_state:
-                        # seaborn 스타일 강제
                         sns.set_theme(style="white")
-                        # pandas, seaborn, matplotlib을 locals에 명시적으로 등록
                         st.session_state["python_tool"].locals["pd"] = pd
                         st.session_state["python_tool"].locals["sns"] = sns
                         st.session_state["python_tool"].locals["plt"] = plt
@@ -164,6 +162,7 @@ def ask(query):
             st.write(ai_answer)
             add_message(MessageRole.ASSISTANT, [MessageType.TEXT, ai_answer])
 
+# 최초 메시지 초기화/CSV 업로드 처리
 if clear_btn:
     st.session_state["messages"] = []
 
@@ -182,10 +181,12 @@ if apply_btn:
         st.session_state["python_tool"].locals["plt"] = plt
         st.session_state["agent"] = create_agent(loaded_data)
         st.success("설정이 완료되었습니다. 대화를 시작해 주세요!")
-    print_messages()
 
-while True:
-    user_input = st.chat_input("궁금한 내용을 물어보세요!")
-    if user_input:
-        ask(user_input)
-        print_messages()
+# 메시지 먼저 출력(항상)
+print_messages()
+
+# 입력은 한 번만! (while, for 등 루프 없이)
+user_input = st.chat_input("궁금한 내용을 물어보세요!")
+if user_input:
+    ask(user_input)
+    print_messages()
