@@ -6,6 +6,6 @@ openai
 pandas
 matplotlib
 python-dotenv
+langchain-teddynote
 tabulate
 seaborn
-
