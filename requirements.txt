@@ -1,0 +1,7 @@
+streamlit
+langchain>=0.1.20
+langchain-experimental>=0.0.40
+openai
+pandas
+matplotlib
+python-dotenv
