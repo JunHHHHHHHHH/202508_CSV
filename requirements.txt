@@ -8,4 +8,5 @@ matplotlib
 python-dotenv
 langchain-teddynote
 tabulate
+seaborn
 
