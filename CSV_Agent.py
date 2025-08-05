@@ -63,14 +63,10 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "CSV 파일을 업로드 해주세요.", type=["csv"], accept_multiple_files=False
     )
-    selected_model = st.selectbox(
-        "OpenAI 모델을 선택해주세요.", ["gpt-4.1-mini", "gpt-4.1-nano"], index=0
-    )
     apply_btn = st.button("데이터 분석 시작")
 
 # API Key 처리
 if user_api_key:
-    # 환경변수에 OPENAI_API_KEY 설정
     os.environ["OPENAI_API_KEY"] = user_api_key
 
 def tool_callback(tool) -> None:
@@ -111,7 +107,6 @@ def result_callback(result: str) -> None:
     pass
 
 def create_agent(dataframe, selected_model="gpt-4.1-mini"):
-    # OpenAI API 키가 입력되지 않은 경우 오류 표시
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     if not openai_key:
         st.error("OpenAI API 키를 입력해주세요 (사이드바)")
@@ -171,7 +166,7 @@ if apply_btn:
         st.session_state["df"] = loaded_data
         st.session_state["python_tool"] = PythonAstREPLTool()
         st.session_state["python_tool"].locals["df"] = loaded_data
-        st.session_state["agent"] = create_agent(loaded_data, selected_model)
+        st.session_state["agent"] = create_agent(loaded_data)  # 모델 파라미터 없이 호출해서 기본값("gpt-4.1-mini") 사용
         st.success("설정이 완료되었습니다. 대화를 시작해 주세요!")
 
 print_messages()
