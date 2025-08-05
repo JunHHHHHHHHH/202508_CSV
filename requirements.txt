@@ -4,4 +4,5 @@ langchain-experimental>=0.0.40
 openai
 pandas
 matplotlib
+langchain-openai
 python-dotenv
