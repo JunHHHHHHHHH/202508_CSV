@@ -82,22 +82,25 @@ def tool_callback(tool) -> None:
                     add_message(MessageRole.ASSISTANT, [MessageType.CODE, query])
 
                     if "df" in st.session_state:
-                        # seaborn 스타일 무조건 white로 통일
-                        sns.set_theme(style="white")  
-                        # pandas가 항상 import되어 있다고 전제한 코드만 실행(아래서 locals에 pd 등록)
-                        # result = st.session_state["python_tool"].invoke({"query": query})
-                        # pandas, seaborn import 및 pd, sns 객체 넘겨주기(추가 safety)
+                        # seaborn 스타일 강제
+                        sns.set_theme(style="white")
+                        # pandas, seaborn, matplotlib을 locals에 명시적으로 등록
                         st.session_state["python_tool"].locals["pd"] = pd
                         st.session_state["python_tool"].locals["sns"] = sns
                         st.session_state["python_tool"].locals["plt"] = plt
-                        result = st.session_state["python_tool"].invoke({"query": query})
+                        try:
+                            result = st.session_state["python_tool"].invoke({"query": query})
+                        except Exception as e:
+                            st.error(f"오류 발생: {e}")
+                            return
                         if isinstance(result, pd.DataFrame):
                             df_in_result = result
                         status.update(label="코드 출력", state="complete", expanded=False)
                         if df_in_result is not None:
                             st.dataframe(df_in_result)
                             add_message(MessageRole.ASSISTANT, [MessageType.DATAFRAME, df_in_result])
-                        if "plt.show" in query:
+                        # Streamlit에서 반드시 st.pyplot(fig) 사용
+                        if "plt.show" in query or "st.pyplot" in query:
                             fig = plt.gcf()
                             st.pyplot(fig)
                             add_message(MessageRole.ASSISTANT, [MessageType.FIGURE, fig])
@@ -131,11 +134,10 @@ def create_agent(dataframe, selected_model="gpt-4.1-mini"):
             "You are a professional data analyst and expert in Pandas. "
             "You must use Pandas DataFrame(`df`) to answer user's request. "
             "\n\n[IMPORTANT] DO NOT create or overwrite the `df` variable in your code. \n\n"
-            "If you are willing to generate visualization code, please use `plt.show()` at the end of your code. "
+            "If you are willing to generate visualization code, you must use fig, ax = plt.subplots() and st.pyplot(fig) to show the figure in Streamlit. "
             "I prefer seaborn code for visualization, but you can use matplotlib as well."
             "\n\n\n"
             "- [IMPORTANT] Use `English` for your visualization title and labels."
-            # [중요] 아래 줄에서 'muted'는 seaborn의 palette로만 사용해야 하며, matplotlib cmap에는 사용 금지!
             "- Please use palette='muted' for seaborn (not cmap), and for matplotlib use a valid colormap (for example, 'viridis')."
             "- white background, and no grid for your visualization."
             "\nRecommend to set cmap, palette parameter for seaborn plot if it is applicable. "
@@ -175,13 +177,15 @@ if apply_btn:
         st.session_state["df"] = loaded_data
         st.session_state["python_tool"] = PythonAstREPLTool()
         st.session_state["python_tool"].locals["df"] = loaded_data
-        st.session_state["python_tool"].locals["pd"] = pd  # pd 등록
-        st.session_state["python_tool"].locals["sns"] = sns  # sns 등록
-        st.session_state["python_tool"].locals["plt"] = plt  # plt 등록
+        st.session_state["python_tool"].locals["pd"] = pd
+        st.session_state["python_tool"].locals["sns"] = sns
+        st.session_state["python_tool"].locals["plt"] = plt
         st.session_state["agent"] = create_agent(loaded_data)
         st.success("설정이 완료되었습니다. 대화를 시작해 주세요!")
     print_messages()
 
-user_input = st.chat_input("궁금한 내용을 물어보세요!")
-if user_input:
-    ask(user_input)
+while True:
+    user_input = st.chat_input("궁금한 내용을 물어보세요!")
+    if user_input:
+        ask(user_input)
+        print_messages()
