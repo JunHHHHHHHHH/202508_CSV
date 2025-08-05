@@ -6,3 +6,5 @@ openai
 pandas
 matplotlib
 python-dotenv
+langchain-teddynote
+
