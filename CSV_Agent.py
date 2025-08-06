@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -122,7 +123,7 @@ def generate_eda_report(df: pd.DataFrame) -> str:
     report += "| 컬럼 | 평균 | 표준편차 | 최소값 | 최대값 |\n"
     report += "|------|------|----------|--------|--------|\n"
     for col in stats.index:
-        report += f"| {col} | {stats.loc[col, 'mean']:.2f} | {stats.loc[col, 'std']:.2f} | {stats.loc[col, 'min']:.2f} | {stats.loc[col, 'max']:.2f} |\n"
+        report += f"| {col} | {stats.loc[col, 'mean']:.2f} | {stats.loc[col, 'std']:.2f} | {stats.loc[column, 'min']:.2f} | {stats.loc[col, 'max']:.2f} |\n"
 
     # 결측치 분석
     missing_data = df.isnull().sum()
@@ -173,6 +174,7 @@ def display_dashboard(df: pd.DataFrame):
     with col1:
         st.metric("전체 행 수", f"{df.shape[0]:,}")
     with col2:
+        st.metric("전체 열 수", f"{df.shape指標: 1,}")
         st.metric("전체 열 수", f"{df.shape[1]:,}")
 
     with st.expander("데이터 정보"):
@@ -245,6 +247,7 @@ def display_dashboard(df: pd.DataFrame):
 def display_chat_history():
     """메시지, DataFrame, 차트를 포함한 채팅 기록을 표시합니다."""
     latest_report_id = st.session_state.get("last_report_id")
+    displayed_charts = set()  # 중복 차트 렌더링 방지를 위한 집합
     for msg in st.session_state.messages:
         # 최신 리포트가 아닌 이전 EDA 리포트는 표시하지 않음
         if msg.get("report_id") and msg["report_id"] != latest_report_id:
@@ -255,9 +258,12 @@ def display_chat_history():
             elif msg["type"] == "dataframe":
                 st.dataframe(msg["content"], use_container_width=True)
             elif msg["type"] == "figure":
-                st.plotly_chart(msg["content"], use_container_width=True)
+                chart_id = msg.get("chart_id", str(uuid.uuid4()))  # 고유한 차트 ID 생성
+                if chart_id not in displayed_charts:
+                    st.plotly_chart(msg["content"], use_container_width=True, key=chart_id)
+                    displayed_charts.add(chart_id)
 
-def add_message(role: str, content: Any, msg_type: str = "text", report_id: Optional[str] = None):
+def add_message(role: str, content: Any, msg_type: str = "text", report_id: Optional[str] = None, chart_id: Optional[str] = None):
     """세션 상태에 메시지를 추가합니다. 중복 메시지 방지."""
     if st.session_state.last_message != content:
         message = {
@@ -268,6 +274,8 @@ def add_message(role: str, content: Any, msg_type: str = "text", report_id: Opti
         }
         if report_id:
             message["report_id"] = report_id
+        if chart_id:
+            message["chart_id"] = chart_id
         st.session_state.messages.append(message)
         st.session_state.last_message = content
 
@@ -281,7 +289,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
         # 새로운 리포트 ID 생성
         report_id = str(uuid.uuid4())
         st.session_state.last_report_id = report_id
-        # 이전 메시지 중 EDA 리포트 관련 메시지 제거
+        # 이전 리포트 관련 메시지 제거
         st.session_state.messages = [msg for msg in st.session_state.messages if "report_id" not in msg]
 
     if display_prompt:
@@ -301,14 +309,16 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
             final_text = callback_handler.get_final_text()
             intermediate_steps = response.get("intermediate_steps", [])
 
+            chart_counter = 0
             for step in intermediate_steps:
                 tool_output = step[1]
+                chart_id = str(uuid.uuid4())  # 고유한 차트 ID 생성
                 if isinstance(tool_output, go.Figure):
-                    st.plotly_chart(tool_output, use_container_width=True)
-                    add_message("assistant", tool_output, "figure", report_id if is_eda_report else None)
+                    st.plotly_chart(tool_output, use_container_width=True, key=f"chart_{chart_id}")
+                    add_message("assistant", tool_output, "figure", report_id if is_eda_report else None, chart_id)
                 elif isinstance(tool_output, pd.DataFrame):
                     st.dataframe(tool_output, use_container_width=True)
-                    add_message("assistant", tool_output, "dataframe", report_id if is_eda_report else None)
+                    add_message("assistant", tool_output, "dataframe", report_id if is_eda_report else None, chart_id)
 
             if final_text.strip():
                 add_message("assistant", final_text, "text", report_id if is_eda_report else None)
@@ -324,6 +334,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                 # 상관관계 히트맵
                 if len(numeric_cols) > 0:
                     corr = df[numeric_cols].corr()
+                    chart_id = str(uuid.uuid4())
                     fig_corr = px.imshow(
                         corr,
                         text_auto=True,
@@ -331,8 +342,8 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         color_continuous_scale='Viridis',
                         template='plotly_white'
                     )
-                    st.plotly_chart(fig_corr, use_container_width=True)
-                    add_message("assistant", fig_corr, "figure", report_id)
+                    st.plotly_chart(fig_corr, use_container_width=True, key=f"corr_{chart_id}")
+                    add_message("assistant", fig_corr, "figure", report_id, chart_id)
 
                 # 클러스터링
                 if len(numeric_cols) >= 2:
@@ -343,6 +354,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         clusters = kmeans.fit_predict(scaled_data)
                         df_cluster = df[numeric_cols].dropna().copy()
                         df_cluster['Cluster'] = clusters
+                        chart_id = str(uuid.uuid4())
                         fig_cluster = px.scatter(
                             df_cluster,
                             x=numeric_cols[0],
@@ -352,8 +364,8 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                             template='plotly_white',
                             color_continuous_scale='Viridis'
                         )
-                        st.plotly_chart(fig_cluster, use_container_width=True)
-                        add_message("assistant", fig_cluster, "figure", report_id)
+                        st.plotly_chart(fig_cluster, use_container_width=True, key=f"cluster_{chart_id}")
+                        add_message("assistant", fig_cluster, "figure", report_id, chart_id)
 
                 # 피처 중요도
                 if 'score' in df.columns and len(numeric_cols) > 1:
@@ -362,18 +374,20 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                     rf = RandomForestRegressor(random_state=42)
                     rf.fit(X, y)
                     feature_importance = pd.Series(rf.feature_importances_, index=X.columns)
+                    chart_id = str(uuid.uuid4())
                     fig_importance = px.bar(
                         feature_importance,
                         title="피처 중요도",
                         template='plotly_white',
                         color_discrete_sequence=['#1f77b4']
                     )
-                    st.plotly_chart(fig_importance, use_container_width=True)
-                    add_message("assistant", fig_importance, "figure", report_id)
+                    st.plotly_chart(fig_importance, use_container_width=True, key=f"importance_{chart_id}")
+                    add_message("assistant", fig_importance, "figure", report_id, chart_id)
 
                 # 시계열 분석
                 datetime_cols = df.select_dtypes(include=['datetime']).columns
                 if len(datetime_cols) > 0 and len(numeric_cols) > 0:
+                    chart_id = str(uuid.uuid4())
                     fig_time = px.line(
                         df,
                         x=datetime_cols[0],
@@ -382,8 +396,8 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         template='plotly_white',
                         color_discrete_sequence=['#ff7f0e']
                     )
-                    st.plotly_chart(fig_time, use_container_width=True)
-                    add_message("assistant", fig_time, "figure", report_id)
+                    st.plotly_chart(fig_time, use_container_width=True, key=f"time_{chart_id}")
+                    add_message("assistant", fig_time, "figure", report_id, chart_id)
 
             if is_eda_report:
                 st.success("EDA 리포트가 성공적으로 생성되었습니다!")
@@ -393,7 +407,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
             st.error(error_message)
             add_message("assistant", error_message, "text", report_id if is_eda_report else None)
 
-def setup_sidebar():
+def setup sidebar():
     """사이드바에 API 키 입력과 파일 업로더를 설정합니다."""
     with st.sidebar:
         st.header("설정")
@@ -452,7 +466,7 @@ def main():
     st.title("🤖 AI CSV 분석 챗봇 (v2.9)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
-    setup_sidebar()
+    setup sidebar()
 
     if st.session_state.df is not None and (
         st.session_state.agent is None or
@@ -491,3 +505,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
