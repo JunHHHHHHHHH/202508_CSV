@@ -46,6 +46,7 @@ def create_cached_agent(df: pd.DataFrame, api_key: str) -> Optional[Any]:
             3. 모든 답변은 반드시 한국어로 제공하세요.
             4. 데이터 탐색 시 df.columns, df.head(), df.info(), df.describe() 등을 활용하세요.
             5. 주요 통계치 요약, 핵심 인사이트 등은 markdown 테이블로 깔끔하게 정리해서 리포트에 포함해 주세요.
+            6. 상관관계 분석, 회귀분석, 이상치 분석 시 pandas, numpy, plotly, statsmodels, scikit-learn 라이브러리를 사용하세요.
             예시:
             | 항목     | 평균   | 표준편차 |
             |----------|--------|---------|
@@ -217,7 +218,7 @@ def run_agent(query: str, display_prompt: bool = True):
                     st.dataframe(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "dataframe")
             
-            # 스트리밍된 텍스트를 최종 답변으로 사용
+            # 스트리밍된 텍스트를 최종 답변으로 사용, 중복 방지
             final_text = callback_handler.get_final_text()
             if final_text.strip():
                 add_message("assistant", final_text, "text")
@@ -273,7 +274,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.4)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.5)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -318,12 +319,14 @@ def main():
             업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
 
             리포트에는 다음이 반드시 포함되어야 해:
-            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치 등.
-            - **핵심 인사이트**: 가장 눈에 띄는 인사이트 5가지.
-            - **상관관계 분석**: 수치형 변수들(df.select_dtypes(include=['number'])) 간 상관관계만 분석하고, 히트맵을 포함해. 문자열 데이터는 제외하여 오류를 방지해.
-            - **회귀분석**: `score` 컬럼을 종속 변수로 하고, 나머지 수치형 변수들(df.select_dtypes(include=['number']).drop(columns=['score'], errors='ignore'))을 독립 변수로 사용하여 회귀분석을 수행해. 문자열 데이터는 제외하고, 산점도와 회귀선을 포함해.
-            - **이상치 분석**: 주요 컬럼 이상치(Box Plot 포함).
-            - **결측치 및 데이터 품질**: 결측치, 타입 오류 등 문제점 분석.
+            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치(df.describe())를 마크다운 테이블로 정리.
+            - **핵심 인사이트**: 데이터에서 발견된 가장 중요한 인사이트 5가지를 번호 매겨 설명.
+            - **상관관계 분석**: 수치형 변수들(df.select_dtypes(include=['number']))만 사용하여 상관관계 행렬을 계산하고, Plotly로 히트맵을 생성해. 문자열 데이터는 제외하여 오류를 방지해. 예: `df.select_dtypes(include=['number']).corr()`.
+            - **회귀분석**: `score` 컬럼을 종속 변수로 하고, 나머지 수치형 변수들(df.select_dtypes(include=['number']).drop(columns=['score'], errors='ignore'))을 독립 변수로 사용하여 다중 선형 회귀분석을 수행해. `statsmodels` 또는 `scikit-learn`을 사용하고, 회귀 계수와 R² 값을 포함하며, Plotly로 산점도와 회귀선을 시각화해. 문자열 데이터는 제외하고, 결측치는 제거하거나 적절히 처리해.
+            - **이상치 분석**: 주요 수치형 컬럼에 대해 Box Plot을 사용하여 이상치를 시각화해. `df.select_dtypes(include=['number'])`를 사용하고, 이상치가 발견되면 해당 컬럼과 값을 설명.
+            - **결측치 및 데이터 품질**: 결측치(df.isnull().sum())와 데이터 타입 오류를 분석하고, 문제가 있다면 해결 방안을 제안.
+
+            **중요**: 모든 분석은 pandas, numpy, plotly, statsmodels, scikit-learn 라이브러리를 사용하여 수행하고, 문자열 데이터는 반드시 제외해. 결측치가 있는 경우 `df.dropna()`로 처리하거나 적절히 대체해. 리포트는 한 번만 출력되도록 해.
 
             **특히, 주요 통계치 요약은 마크다운 테이블로 깔끔하게 정리해 주세요.**
             **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
