@@ -541,7 +541,7 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.8em;">
-        🚀 Advanced CSV Analytics Chatbot | Powered by OpenAI GPT-4 & Streamlit | JunHwan<br>
+        🚀 Advanced CSV Analytics Chatbot | Powered by OpenAI GPT-4 & Streamlit | JunHwan/BOMI/HyoA<br>
         💡 AI 자동 분석, 인터랙티브 시각화, 스마트 인사이트 제공
     </div>
     """, unsafe_allow_html=True)
