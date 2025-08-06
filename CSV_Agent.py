@@ -86,6 +86,7 @@ def init_session_state():
         "df": None,
         "agent": None,
         "df_name": None,
+        "last_message": None,  # 마지막 메시지 추적
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -173,13 +174,16 @@ def display_chat_history():
                 st.plotly_chart(msg["content"], use_container_width=True)
 
 def add_message(role: str, content: Any, msg_type: str = "text"):
-    """세션 상태에 메시지를 추가합니다."""
-    st.session_state.messages.append({
-        "role": role,
-        "content": content,
-        "type": msg_type,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+    """세션 상태에 메시지를 추가합니다. 중복 메시지 방지."""
+    # 동일한 내용의 메시지가 이미 존재하는지 확인
+    if st.session_state.last_message != content:
+        st.session_state.messages.append({
+            "role": role,
+            "content": content,
+            "type": msg_type,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        st.session_state.last_message = content
 
 def run_agent(query: str, display_prompt: bool = True):
     """주어진 쿼리로 에이전트를 실행하고 결과를 표시합니다."""
@@ -188,8 +192,9 @@ def run_agent(query: str, display_prompt: bool = True):
         return
 
     if display_prompt:
-        add_message("user", query)
-        st.chat_message("user").markdown(query)
+        add_message("user", query, "text")
+        with st.chat_message("user"):
+            st.markdown(query)
 
     with st.chat_message("assistant"):
         container = st.empty()
@@ -217,10 +222,11 @@ def run_agent(query: str, display_prompt: bool = True):
                 add_message("assistant", final_text, "text")
             else:
                 st.error("분석 결과가 비어 있습니다.")
+                add_message("assistant", "분석 결과가 비어 있습니다.", "text")
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
-            add_message("assistant", error_message)
+            add_message("assistant", error_message, "text")
 
 def setup_sidebar():
     """사이드바에 API 키 입력과 파일 업로더를 설정합니다."""
@@ -255,6 +261,7 @@ def setup_sidebar():
             st.session_state.messages = []
             st.session_state.agent = None
             st.session_state.df_name = None
+            st.session_state.last_message = None
             st.rerun()
 
 def main():
@@ -265,7 +272,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.6)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.7)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -311,22 +318,23 @@ def main():
             **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
 
             예시:
-            | 항목     | 평균   | 표준편차 |
-            |----------|--------|---------|
-            | hurdles  | 13.17  | 0.40    |
-            | highjump | 1.81   | 0.04    |
-            | shot     | 15.24  | 0.81    |
-            | run200m  | 23.43  | 0.59    |
-            | longjump | 6.65   | 0.42    |
-            | javelin  | 44.60  | 2.05    |
-            | run800m  | 127.79 | 3.00    |
-            | score    | 6825.20| 310.60  |
+            | 항목     | 평균   | 표준편차 | median |
+            |----------|--------|---------|---------|
+            | hurdles  | 13.17  | 0.40    |0.40    |
+            | highjump | 1.81   | 0.04    |0.40    |
+            | shot     | 15.24  | 0.81    |0.40    |
+            | run200m  | 23.43  | 0.59    |0.40    |
+            | longjump | 6.65   | 0.42    |0.40    |
+            | javelin  | 44.60  | 2.05    |0.40    |
+            | run800m  | 127.79 | 3.00    |0.40    |
+            | score    | 6825.20| 310.60  |0.40    |
 
             전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘. 모든 분석은 반드시 성공적으로 수행되어야 하며, 오류가 발생하지 않도록 데이터 전처리를 철저히 수행해.
             """
             run_agent(auto_report_prompt, display_prompt=False)
         
         st.divider()
+        # 채팅 기록은 실시간으로 표시하지 않고, run_agent 후에만 업데이트된 메시지를 표시
         display_chat_history()
         if prompt := st.chat_input("데이터에 대해 질문을 입력하세요..."):
             run_agent(prompt)
