@@ -10,6 +10,7 @@ from sklearn.cluster import KMeans
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import numpy as np
+import uuid
 
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
@@ -98,6 +99,7 @@ def init_session_state():
         "agent": None,
         "df_name": None,
         "last_message": None,
+        "last_report_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -138,7 +140,6 @@ def generate_eda_report(df: pd.DataFrame) -> str:
     numeric_cols = df.select_dtypes(include=['number']).columns
     if len(numeric_cols) > 0:
         report += "\n### 상관관계 분석\n"
-        corr = df[numeric_cols].corr()
         report += "수치형 변수 간 상관관계를 히트맵으로 시각화했습니다.\n"
 
         # 클러스터링 분석
@@ -243,7 +244,11 @@ def display_dashboard(df: pd.DataFrame):
 
 def display_chat_history():
     """메시지, DataFrame, 차트를 포함한 채팅 기록을 표시합니다."""
+    latest_report_id = st.session_state.get("last_report_id")
     for msg in st.session_state.messages:
+        # 최신 리포트가 아닌 이전 EDA 리포트는 표시하지 않음
+        if msg.get("report_id") and msg["report_id"] != latest_report_id:
+            continue
         with st.chat_message(msg["role"]):
             if msg["type"] == "text":
                 st.markdown(msg["content"])
@@ -252,15 +257,18 @@ def display_chat_history():
             elif msg["type"] == "figure":
                 st.plotly_chart(msg["content"], use_container_width=True)
 
-def add_message(role: str, content: Any, msg_type: str = "text"):
+def add_message(role: str, content: Any, msg_type: str = "text", report_id: Optional[str] = None):
     """세션 상태에 메시지를 추가합니다. 중복 메시지 방지."""
     if st.session_state.last_message != content:
-        st.session_state.messages.append({
+        message = {
             "role": role,
             "content": content,
             "type": msg_type,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+        }
+        if report_id:
+            message["report_id"] = report_id
+        st.session_state.messages.append(message)
         st.session_state.last_message = content
 
 def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = False):
@@ -270,8 +278,11 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
         return
 
     if is_eda_report:
-        # EDA 리포트인 경우 기존 메시지 중복 제거
-        st.session_state.messages = [msg for msg in st.session_state.messages if "탐색적 데이터 분석(EDA) 리포트" not in str(msg["content"])]
+        # 새로운 리포트 ID 생성
+        report_id = str(uuid.uuid4())
+        st.session_state.last_report_id = report_id
+        # 이전 메시지 중 EDA 리포트 관련 메시지 제거
+        st.session_state.messages = [msg for msg in st.session_state.messages if "report_id" not in msg]
 
     if display_prompt:
         add_message("user", query, "text")
@@ -294,16 +305,16 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                 tool_output = step[1]
                 if isinstance(tool_output, go.Figure):
                     st.plotly_chart(tool_output, use_container_width=True)
-                    add_message("assistant", tool_output, "figure")
+                    add_message("assistant", tool_output, "figure", report_id if is_eda_report else None)
                 elif isinstance(tool_output, pd.DataFrame):
                     st.dataframe(tool_output, use_container_width=True)
-                    add_message("assistant", tool_output, "dataframe")
+                    add_message("assistant", tool_output, "dataframe", report_id if is_eda_report else None)
 
             if final_text.strip():
-                add_message("assistant", final_text, "text")
+                add_message("assistant", final_text, "text", report_id if is_eda_report else None)
             else:
                 st.error("분석 결과가 비어 있습니다.")
-                add_message("assistant", "분석 결과가 비어 있습니다.", "text")
+                add_message("assistant", "분석 결과가 비어 있습니다.", "text", report_id if is_eda_report else None)
 
             # 추가적인 시각화 (EDA 리포트용)
             if is_eda_report:
@@ -321,7 +332,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         template='plotly_white'
                     )
                     st.plotly_chart(fig_corr, use_container_width=True)
-                    add_message("assistant", fig_corr, "figure")
+                    add_message("assistant", fig_corr, "figure", report_id)
 
                 # 클러스터링
                 if len(numeric_cols) >= 2:
@@ -342,7 +353,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                             color_continuous_scale='Viridis'
                         )
                         st.plotly_chart(fig_cluster, use_container_width=True)
-                        add_message("assistant", fig_cluster, "figure")
+                        add_message("assistant", fig_cluster, "figure", report_id)
 
                 # 피처 중요도
                 if 'score' in df.columns and len(numeric_cols) > 1:
@@ -358,7 +369,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         color_discrete_sequence=['#1f77b4']
                     )
                     st.plotly_chart(fig_importance, use_container_width=True)
-                    add_message("assistant", fig_importance, "figure")
+                    add_message("assistant", fig_importance, "figure", report_id)
 
                 # 시계열 분석
                 datetime_cols = df.select_dtypes(include=['datetime']).columns
@@ -372,12 +383,15 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
                         color_discrete_sequence=['#ff7f0e']
                     )
                     st.plotly_chart(fig_time, use_container_width=True)
-                    add_message("assistant", fig_time, "figure")
+                    add_message("assistant", fig_time, "figure", report_id)
+
+            if is_eda_report:
+                st.success("EDA 리포트가 성공적으로 생성되었습니다!")
 
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
-            add_message("assistant", error_message, "text")
+            add_message("assistant", error_message, "text", report_id if is_eda_report else None)
 
 def setup_sidebar():
     """사이드바에 API 키 입력과 파일 업로더를 설정합니다."""
@@ -413,6 +427,7 @@ def setup_sidebar():
                 st.session_state.agent = None  # 파일 변경 시 에이전트 초기화
                 st.session_state.messages = []  # 메시지 초기화
                 st.session_state.last_message = None
+                st.session_state.last_report_id = None
                 # 이전 DataFrame 메모리 해제
                 if st.session_state.df is not None:
                     del st.session_state.df
@@ -423,6 +438,7 @@ def setup_sidebar():
             st.session_state.agent = None
             st.session_state.df_name = None
             st.session_state.last_message = None
+            st.session_state.last_report_id = None
             st.rerun()
 
 def main():
@@ -433,7 +449,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.8)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.9)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -462,8 +478,11 @@ def main():
         st.subheader("💬 AI에게 데이터에 대해 질문해보세요")
         st.markdown("리포트 작성에 다소 시간이 소요될 수 있습니다.")
         if st.button("🤖 AI 자동 리포트 생성"):
-            auto_report_prompt = generate_eda_report(st.session_state.df)
-            run_agent(auto_report_prompt, display_prompt=False, is_eda_report=True)
+            if st.session_state.df is None:
+                st.error("먼저 CSV 파일을 업로드하고 선택해주세요.")
+            else:
+                auto_report_prompt = generate_eda_report(st.session_state.df)
+                run_agent(auto_report_prompt, display_prompt=False, is_eda_report=True)
         
         st.divider()
         display_chat_history()
