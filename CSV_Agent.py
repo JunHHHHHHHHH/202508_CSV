@@ -87,6 +87,7 @@ def init_session_state():
         "agent": None,
         "df_name": None,
         "last_message": None,  # 마지막 메시지 추적
+        "last_stream_id": None,  # 마지막 스트리밍 세션 ID
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -185,29 +186,35 @@ def add_message(role: str, content: Any, msg_type: str = "text"):
         })
         st.session_state.last_message = content
 
-def run_agent(query: str, display_prompt: bool = True):
-    """주어진 쿼리로 에이전트를 실행하고 결과를 표시합니다."""
+def run_agent(query: str, display_prompt: bool = True, stream_id: str = None):
+    """주어진 쿼리로 에이전트를 실행하고 결과를 한 번에만 챗창에 표시합니다."""
     if st.session_state.agent is None:
         st.error("에이전트가 초기화되지 않았습니다. API 키를 확인하고 파일을 다시 업로드해주세요.")
         return
 
+    # 프롬프트가 보이고, 중복된 stream_id 세션을 피하기 위해 session 저장
     if display_prompt:
         add_message("user", query, "text")
         with st.chat_message("user"):
             st.markdown(query)
 
+    if stream_id and stream_id == st.session_state.get("last_stream_id", None):
+        return  # 같은 스트리밍 세션이 이미 처리된 경우 중복 실행 방지
+
     with st.chat_message("assistant"):
-        container = st.empty()
-        callback_handler = StreamlitCallbackHandler(container)
+        stream_container = st.empty()
+        callback_handler = StreamlitCallbackHandler(stream_container)
         try:
+            # 스트리밍 중에는 메시지 추가 하지 않음
             with st.spinner("분석 중..."):
                 response = st.session_state.agent.invoke(
                     {"input": query},
                     {"callbacks": [callback_handler]}
                 )
-            final_text = callback_handler.get_final_text()
+            stream_text = callback_handler.get_final_text()
             intermediate_steps = response.get("intermediate_steps", [])
             
+            # 스트리밍 종료 후, 중간 단계 결과(차트, 표 등)와 텍스트를 각각 한 번씩 추가
             for step in intermediate_steps:
                 tool_output = step[1]
                 if isinstance(tool_output, go.Figure):
@@ -216,13 +223,14 @@ def run_agent(query: str, display_prompt: bool = True):
                 elif isinstance(tool_output, pd.DataFrame):
                     st.dataframe(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "dataframe")
+                # 텍스트 메시지가 누적되는 문제 해결: 차트/표만 별도로 추가
             
-            # 스트리밍된 텍스트만 메시지로 추가
-            if final_text.strip():
-                add_message("assistant", final_text, "text")
-            else:
-                st.error("분석 결과가 비어 있습니다.")
-                add_message("assistant", "분석 결과가 비어 있습니다.", "text")
+            # 스트리밍된 마크다운 텍스트(리포트)는 한 번만 추가
+            if stream_text.strip():
+                st.markdown(stream_text)
+                add_message("assistant", stream_text, "text")
+            
+            st.session_state["last_stream_id"] = stream_id  # 중복 방지 세션 추적
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
@@ -262,6 +270,7 @@ def setup_sidebar():
             st.session_state.agent = None
             st.session_state.df_name = None
             st.session_state.last_message = None
+            st.session_state.last_stream_id = None
             st.rerun()
 
 def main():
@@ -331,13 +340,12 @@ def main():
 
             전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘. 모든 분석은 반드시 성공적으로 수행되어야 하며, 오류가 발생하지 않도록 데이터 전처리를 철저히 수행해.
             """
-            run_agent(auto_report_prompt, display_prompt=False)
+            run_agent(auto_report_prompt, display_prompt=False, stream_id="auto_report")
         
         st.divider()
-        # 채팅 기록은 실시간으로 표시하지 않고, run_agent 후에만 업데이트된 메시지를 표시
         display_chat_history()
         if prompt := st.chat_input("데이터에 대해 질문을 입력하세요..."):
-            run_agent(prompt)
+            run_agent(prompt, stream_id=f"user_prompt_{datetime.now().strftime('%Y%m%d%H%M%S')}")
 
 if __name__ == "__main__":
     main()
