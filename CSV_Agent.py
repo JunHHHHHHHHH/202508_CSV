@@ -533,7 +533,7 @@ def main():
     with tab1:
         st.subheader("💬 AI에게 데이터에 대해 질문해보세요")
         st.markdown("리포트 작성에 다소 시간이 소요될 수 있습니다.")
-        if st.button("🤖 AI 자동 리포트 생성"):
+        if st.button(" AI 자동 리포트 생성"):
             if st.session_state.df is None:
                 st.error("먼저 CSV 파일을 업로드하고 선택해주세요.")
             else:
