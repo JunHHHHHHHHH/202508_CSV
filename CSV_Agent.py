@@ -19,19 +19,27 @@ from langchain.callbacks.base import BaseCallbackHandler
 # CSV 파일 로딩 캐싱
 @st.cache_data(show_spinner=False)
 def load_csv(file) -> pd.DataFrame:
-    """CSV 파일을 로드하고 캐싱합니다."""
-    try:
-        if file.size == 0:
-            st.error("업로드된 CSV 파일이 비어 있습니다.")
-            return None
-        df = pd.read_csv(file)
-        if df.empty:
-            st.error("CSV 파일에 데이터가 없습니다.")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"CSV 파일을 읽는 중 오류 발생: {str(e)}")
-        return None
+    """CSV 파일을 로드하고 캐싱합니다. 다양한 인코딩을 시도하여 파일을 읽습니다."""
+    encodings = ['utf-8', 'utf-8-sig', 'cp949', 'euc-kr', 'iso-8859-1']
+    for encoding in encodings:
+        try:
+            if file.size == 0:
+                st.error("업로드된 CSV 파일이 비어 있습니다.")
+                return None
+            file.seek(0)  # 파일 포인터를 처음으로 되돌림
+            df = pd.read_csv(file, encoding=encoding)
+            if df.empty:
+                st.error("CSV 파일에 데이터가 없습니다.")
+                return None
+            st.success(f"파일이 '{encoding}' 인코딩으로 성공적으로 로드되었습니다!")
+            return df
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            st.warning(f"'{encoding}' 인코딩으로 파일을 읽는 중 오류 발생: {str(e)}")
+            continue
+    st.error("모든 인코딩 시도 실패. 파일이 CSV 형식이 아니거나 손상되었을 수 있습니다. 파일 인코딩을 확인해주세요 (예: UTF-8, CP949, EUC-KR).")
+    return None
 
 # 에이전트 생성 캐싱
 @st.cache_resource(show_spinner=False)
