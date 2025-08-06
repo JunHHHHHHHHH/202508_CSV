@@ -63,12 +63,19 @@ class StreamlitCallbackHandler(BaseCallbackHandler):
     """Streamlit UI에 Agent의 중간 과정을 스트리밍하기 위한 콜백 핸들러"""
     def __init__(self, container):
         self.container = container
+        self.text = ""
 
     def on_llm_new_token(self, token: str, **kwargs) -> None:
-        self.container.markdown(token, unsafe_allow_html=True)
+        """스트리밍된 토큰을 수집하고 화면에 표시합니다."""
+        self.text += token
+        self.container.markdown(self.text, unsafe_allow_html=True)
 
     def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> Any:
         pass  # 코드 실행 과정을 화면에 노출하지 않음
+
+    def get_final_text(self) -> str:
+        """수집된 최종 텍스트를 반환합니다."""
+        return self.text
 
 def init_session_state():
     """세션 상태 변수를 초기화합니다."""
@@ -187,11 +194,12 @@ def run_agent(query: str, display_prompt: bool = True):
 
     with st.chat_message("assistant"):
         container = st.empty()
+        callback_handler = StreamlitCallbackHandler(container)
         try:
             with st.spinner("분석 중..."):
                 response = st.session_state.agent.invoke(
                     {"input": query},
-                    {"callbacks": [StreamlitCallbackHandler(container)]}
+                    {"callbacks": [callback_handler]}
                 )
             final_answer = response.get("output", "죄송합니다, 답변을 생성하지 못했습니다.")
             intermediate_steps = response.get("intermediate_steps", [])
@@ -209,8 +217,12 @@ def run_agent(query: str, display_prompt: bool = True):
                     st.dataframe(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "dataframe")
             
-            add_message("assistant", final_answer, "text")
-            container.markdown(final_answer)
+            # 스트리밍된 텍스트를 최종 답변으로 사용
+            final_text = callback_handler.get_final_text()
+            if final_text.strip():
+                add_message("assistant", final_text, "text")
+            else:
+                add_message("assistant", final_answer, "text")
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
@@ -261,7 +273,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.3)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.4)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -313,7 +325,6 @@ def main():
             - **이상치 분석**: 주요 컬럼 이상치(Box Plot 포함).
             - **결측치 및 데이터 품질**: 결측치, 타입 오류 등 문제점 분석.
 
-            **모든 답변은 한국어로 작성해 주세요.**
             **특히, 주요 통계치 요약은 마크다운 테이블로 깔끔하게 정리해 주세요.**
             **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
 
