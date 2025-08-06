@@ -122,7 +122,7 @@ def generate_eda_report(df: pd.DataFrame) -> str:
     report += "| 컬럼 | 평균 | 표준편차 | 최소값 | 최대값 |\n"
     report += "|------|------|----------|--------|--------|\n"
     for col in stats.index:
-        report += f"| {col} | {stats.loc[col, 'mean']:.2f} | {stats.loc[col, 'std']:.2f} | {stats.loc[column, 'min']:.2f} | {stats.loc[col, 'max']:.2f} |\n"
+        report += f"| {col} | {stats.loc[col, 'mean']:.2f} | {stats.loc[col, 'std']:.2f} | {stats.loc[col, 'min']:.2f} | {stats.loc[col, 'max']:.2f} |\n"
 
     # 결측치 분석
     missing_data = df.isnull().sum()
@@ -173,7 +173,6 @@ def display_dashboard(df: pd.DataFrame):
     with col1:
         st.metric("전체 행 수", f"{df.shape[0]:,}")
     with col2:
-        st.metric("전체 열 수", f"{df.shape指標: 1,}")
         st.metric("전체 열 수", f"{df.shape[1]:,}")
 
     with st.expander("데이터 정보"):
@@ -406,7 +405,7 @@ def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = Fal
             st.error(error_message)
             add_message("assistant", error_message, "text", report_id if is_eda_report else None)
 
-def setup sidebar():
+def setup_sidebar():
     """사이드바에 API 키 입력과 파일 업로더를 설정합니다."""
     with st.sidebar:
         st.header("설정")
@@ -465,7 +464,7 @@ def main():
     st.title("🤖 AI CSV 분석 챗봇 (v2.9)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
-    setup sidebar()
+    setup_sidebar()
 
     if st.session_state.df is not None and (
         st.session_state.agent is None or
@@ -504,4 +503,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
