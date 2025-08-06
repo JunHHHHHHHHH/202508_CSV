@@ -536,6 +536,15 @@ def main():
         display_chat_history()
         if prompt := st.chat_input("데이터에 대해 질문을 입력하세요..."):
             run_agent(prompt)
+    
+    # 푸터
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; color: #666; font-size: 0.8em;">
+        🚀 Advanced CSV Analytics Chatbot | Powered by OpenAI GPT-4 & Streamlit | JunHwan<br>
+        💡 AI 자동 분석, 인터랙티브 시각화, 스마트 인사이트 제공
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
