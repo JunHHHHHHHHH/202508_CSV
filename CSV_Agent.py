@@ -6,23 +6,34 @@ from plotly.subplots import make_subplots
 import os
 from typing import List, Union, Dict, Any, Optional
 from datetime import datetime
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+import numpy as np
 
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 from langchain_openai import ChatOpenAI
 from langchain.callbacks.base import BaseCallbackHandler
 
 # CSV 파일 로딩 캐싱
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_csv(file) -> pd.DataFrame:
     """CSV 파일을 로드하고 캐싱합니다."""
     try:
-        return pd.read_csv(file)
+        if file.size == 0:
+            st.error("업로드된 CSV 파일이 비어 있습니다.")
+            return None
+        df = pd.read_csv(file)
+        if df.empty:
+            st.error("CSV 파일에 데이터가 없습니다.")
+            return None
+        return df
     except Exception as e:
         st.error(f"CSV 파일을 읽는 중 오류 발생: {str(e)}")
         return None
 
 # 에이전트 생성 캐싱
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def create_cached_agent(df: pd.DataFrame, api_key: str) -> Optional[Any]:
     """pandas DataFrame 에이전트를 생성하고 캐싱합니다."""
     if not api_key:
@@ -86,11 +97,67 @@ def init_session_state():
         "df": None,
         "agent": None,
         "df_name": None,
-        "last_message": None,  # 마지막 메시지 추적
+        "last_message": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+def generate_eda_report(df: pd.DataFrame) -> str:
+    """EDA 리포트를 생성합니다."""
+    report = "## 탐색적 데이터 분석(EDA) 리포트\n\n"
+
+    # 데이터 요약
+    report += "### 데이터 요약\n"
+    report += f"- **데이터 크기**: {df.shape[0]:,} 행, {df.shape[1]} 열\n"
+    buffer = pd.io.common.StringIO()
+    df.info(buf=buffer)
+    report += f"#### 데이터 정보\n```\n{buffer.getvalue()}\n```\n"
+
+    # 주요 통계치
+    stats = df.describe().transpose()
+    report += "#### 주요 통계치\n"
+    report += "| 컬럼 | 평균 | 표준편차 | 최소값 | 최대값 |\n"
+    report += "|------|------|----------|--------|--------|\n"
+    for col in stats.index:
+        report += f"| {col} | {stats.loc[col, 'mean']:.2f} | {stats.loc[col, 'std']:.2f} | {stats.loc[col, 'min']:.2f} | {stats.loc[col, 'max']:.2f} |\n"
+
+    # 결측치 분석
+    missing_data = df.isnull().sum()
+    missing_data = missing_data[missing_data > 0]
+    if not missing_data.empty:
+        report += "\n### 결측치 분석\n"
+        report += "| 컬럼 | 결측치 수 |\n"
+        report += "|------|-----------|\n"
+        for col, count in missing_data.items():
+            report += f"| {col} | {count} |\n"
+    else:
+        report += "\n### 결측치 분석\n🎉 데이터에 결측치가 없습니다!\n"
+
+    # 수치형 컬럼 분석
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    if len(numeric_cols) > 0:
+        report += "\n### 상관관계 분석\n"
+        corr = df[numeric_cols].corr()
+        report += "수치형 변수 간 상관관계를 히트맵으로 시각화했습니다.\n"
+
+        # 클러스터링 분석
+        if len(numeric_cols) >= 2:
+            report += "\n### 클러스터링 분석\n"
+            report += "K-Means 클러스터링을 통해 데이터의 군집을 분석했습니다.\n"
+
+        # 피처 중요도 분석
+        if 'score' in df.columns:
+            report += "\n### 피처 중요도 분석\n"
+            report += "Random Forest를 사용하여 'score'에 대한 피처 중요도를 분석했습니다.\n"
+
+    # 시계열 분석
+    datetime_cols = df.select_dtypes(include=['datetime']).columns
+    if len(datetime_cols) > 0 and len(numeric_cols) > 0:
+        report += "\n### 시계열 분석\n"
+        report += f"날짜 컬럼('{datetime_cols[0]}')을 기준으로 시계열 데이터를 분석했습니다.\n"
+
+    return report
 
 def display_dashboard(df: pd.DataFrame):
     """데이터 대시보드를 표시하며 요약 통계와 시각화를 포함합니다."""
@@ -122,7 +189,8 @@ def display_dashboard(df: pd.DataFrame):
             y=missing_data.values,
             title="결측치 개수",
             labels={'x': '컬럼', 'y': '결측치 수'},
-            template='plotly_white'
+            template='plotly_white',
+            color_discrete_sequence=['#1f77b4']
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -143,9 +211,20 @@ def display_dashboard(df: pd.DataFrame):
             x=selected_numeric,
             title=f"'{selected_numeric}' 컬럼 분포",
             template='plotly_white',
-            color_discrete_sequence=['#1f77b4']
+            color_discrete_sequence=['#1f77b4'],
+            marginal="violin"
         )
         st.plotly_chart(fig_hist, use_container_width=True)
+
+        # KDE 플롯
+        fig_kde = px.density_contour(
+            df,
+            x=selected_numeric,
+            title=f"'{selected_numeric}' KDE 플롯",
+            template='plotly_white',
+            color_discrete_sequence=['#ff7f0e']
+        )
+        st.plotly_chart(fig_kde, use_container_width=True)
 
     if len(categorical_cols) > 0:
         st.markdown("#### 🔹 범주형 데이터 (Categorical)")
@@ -175,7 +254,6 @@ def display_chat_history():
 
 def add_message(role: str, content: Any, msg_type: str = "text"):
     """세션 상태에 메시지를 추가합니다. 중복 메시지 방지."""
-    # 동일한 내용의 메시지가 이미 존재하는지 확인
     if st.session_state.last_message != content:
         st.session_state.messages.append({
             "role": role,
@@ -185,11 +263,15 @@ def add_message(role: str, content: Any, msg_type: str = "text"):
         })
         st.session_state.last_message = content
 
-def run_agent(query: str, display_prompt: bool = True):
+def run_agent(query: str, display_prompt: bool = True, is_eda_report: bool = False):
     """주어진 쿼리로 에이전트를 실행하고 결과를 표시합니다."""
     if st.session_state.agent is None:
         st.error("에이전트가 초기화되지 않았습니다. API 키를 확인하고 파일을 다시 업로드해주세요.")
         return
+
+    if is_eda_report:
+        # EDA 리포트인 경우 기존 메시지 중복 제거
+        st.session_state.messages = [msg for msg in st.session_state.messages if "탐색적 데이터 분석(EDA) 리포트" not in str(msg["content"])]
 
     if display_prompt:
         add_message("user", query, "text")
@@ -207,7 +289,7 @@ def run_agent(query: str, display_prompt: bool = True):
                 )
             final_text = callback_handler.get_final_text()
             intermediate_steps = response.get("intermediate_steps", [])
-            
+
             for step in intermediate_steps:
                 tool_output = step[1]
                 if isinstance(tool_output, go.Figure):
@@ -216,13 +298,82 @@ def run_agent(query: str, display_prompt: bool = True):
                 elif isinstance(tool_output, pd.DataFrame):
                     st.dataframe(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "dataframe")
-            
-            # 스트리밍된 텍스트만 메시지로 추가
+
             if final_text.strip():
                 add_message("assistant", final_text, "text")
             else:
                 st.error("분석 결과가 비어 있습니다.")
                 add_message("assistant", "분석 결과가 비어 있습니다.", "text")
+
+            # 추가적인 시각화 (EDA 리포트용)
+            if is_eda_report:
+                df = st.session_state.df
+                numeric_cols = df.select_dtypes(include=['number']).columns
+
+                # 상관관계 히트맵
+                if len(numeric_cols) > 0:
+                    corr = df[numeric_cols].corr()
+                    fig_corr = px.imshow(
+                        corr,
+                        text_auto=True,
+                        title="수치형 변수 상관관계 히트맵",
+                        color_continuous_scale='Viridis',
+                        template='plotly_white'
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+                    add_message("assistant", fig_corr, "figure")
+
+                # 클러스터링
+                if len(numeric_cols) >= 2:
+                    with st.spinner("클러스터링 분석 중..."):
+                        scaler = StandardScaler()
+                        scaled_data = scaler.fit_transform(df[numeric_cols].dropna())
+                        kmeans = KMeans(n_clusters=3, random_state=42)
+                        clusters = kmeans.fit_predict(scaled_data)
+                        df_cluster = df[numeric_cols].dropna().copy()
+                        df_cluster['Cluster'] = clusters
+                        fig_cluster = px.scatter(
+                            df_cluster,
+                            x=numeric_cols[0],
+                            y=numeric_cols[1],
+                            color='Cluster',
+                            title="K-Means 클러스터링 결과",
+                            template='plotly_white',
+                            color_continuous_scale='Viridis'
+                        )
+                        st.plotly_chart(fig_cluster, use_container_width=True)
+                        add_message("assistant", fig_cluster, "figure")
+
+                # 피처 중요도
+                if 'score' in df.columns and len(numeric_cols) > 1:
+                    X = df[numeric_cols].drop(columns=['score'], errors='ignore').dropna()
+                    y = df['score'].loc[X.index]
+                    rf = RandomForestRegressor(random_state=42)
+                    rf.fit(X, y)
+                    feature_importance = pd.Series(rf.feature_importances_, index=X.columns)
+                    fig_importance = px.bar(
+                        feature_importance,
+                        title="피처 중요도",
+                        template='plotly_white',
+                        color_discrete_sequence=['#1f77b4']
+                    )
+                    st.plotly_chart(fig_importance, use_container_width=True)
+                    add_message("assistant", fig_importance, "figure")
+
+                # 시계열 분석
+                datetime_cols = df.select_dtypes(include=['datetime']).columns
+                if len(datetime_cols) > 0 and len(numeric_cols) > 0:
+                    fig_time = px.line(
+                        df,
+                        x=datetime_cols[0],
+                        y=numeric_cols[0],
+                        title=f"'{numeric_cols[0]}'의 시계열 분석",
+                        template='plotly_white',
+                        color_discrete_sequence=['#ff7f0e']
+                    )
+                    st.plotly_chart(fig_time, use_container_width=True)
+                    add_message("assistant", fig_time, "figure")
+
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
@@ -233,8 +384,9 @@ def setup_sidebar():
     with st.sidebar:
         st.header("설정")
         api_key = st.text_input("🔑 OpenAI API Key", type="password", key="api_key_input")
-        if api_key:
+        if api_key and api_key != st.session_state.get("api_key"):
             st.session_state["api_key"] = api_key
+            st.session_state.agent = None  # API 키 변경 시 에이전트 초기화
         
         uploaded_files = st.file_uploader(
             "📁 CSV 파일 업로드",
@@ -250,12 +402,21 @@ def setup_sidebar():
                         if df is not None:
                             st.session_state.uploaded_files[file.name] = df
             file_names = list(st.session_state.uploaded_files.keys())
-            st.session_state.selected_file = st.selectbox(
+            selected_file = st.selectbox(
                 "분석할 파일을 선택하세요.",
-                options=file_names
+                options=file_names,
+                index=file_names.index(st.session_state.selected_file) if st.session_state.selected_file in file_names else 0
             )
-            if st.session_state.selected_file:
-                st.session_state.df = st.session_state.uploaded_files[st.session_state.selected_file]
+            if selected_file != st.session_state.selected_file:
+                st.session_state.selected_file = selected_file
+                st.session_state.df = st.session_state.uploaded_files[selected_file]
+                st.session_state.agent = None  # 파일 변경 시 에이전트 초기화
+                st.session_state.messages = []  # 메시지 초기화
+                st.session_state.last_message = None
+                # 이전 DataFrame 메모리 해제
+                if st.session_state.df is not None:
+                    del st.session_state.df
+                st.session_state.df = st.session_state.uploaded_files[selected_file]
         
         if st.button("🔄️ 대화 초기화"):
             st.session_state.messages = []
@@ -272,7 +433,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.7)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.8)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -301,40 +462,10 @@ def main():
         st.subheader("💬 AI에게 데이터에 대해 질문해보세요")
         st.markdown("리포트 작성에 다소 시간이 소요될 수 있습니다.")
         if st.button("🤖 AI 자동 리포트 생성"):
-            auto_report_prompt = """
-            ## 탐색적 데이터 분석(EDA) 리포트
-
-            업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
-
-            리포트에는 다음이 반드시 포함되어야 해:
-            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치 등(df.info(), df.describe() 사용).
-            - **핵심 인사이트**: 가장 눈에 띄는 인사이트 5가지.
-            - **상관관계 분석**: 수치형 변수들(df.select_dtypes(include=['number'])) 간 상관관계만 분석하고, 히트맵을 Plotly로 생성해. 문자열 데이터는 제외하고, 결측치는 df.dropna()로 처리하여 오류를 방지해.
-            - **회귀분석**: `scikit-learn`을 사용하여 `score` 컬럼을 종속 변수로 하고, 나머지 수치형 변수들(df.select_dtypes(include=['number']).drop(columns=['score'], errors='ignore'))을 독립 변수로 회귀분석을 수행해. 결측치는 df.dropna()로 처리하고, 문자열 데이터는 제외하며, 산점도와 회귀선을 Plotly로 생성해.
-            - **이상치 분석**: 주요 수치형 컬럼에 대해 Box Plot을 Plotly로 생성해 이상치를 시각화해. 결측치는 df.dropna()로 처리하고, 문자열 데이터는 제외해.
-            - **결측치 및 데이터 품질**: 결측치(df.isnull().sum()), 타입 오류 등 문제점 분석.
-
-            **특히, 주요 통계치 요약은 마크다운 테이블로 깔끔하게 정리해 주세요.**
-            **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
-
-            예시:
-            | 항목     | 평균   | 표준편차 |
-            |----------|--------|---------|
-            | hurdles  | 13.17  | 0.40    |
-            | highjump | 1.81   | 0.04    |
-            | shot     | 15.24  | 0.81    |
-            | run200m  | 23.43  | 0.59    |
-            | longjump | 6.65   | 0.42    |
-            | javelin  | 44.60  | 2.05    |
-            | run800m  | 127.79 | 3.00    |
-            | score    | 6825.20| 310.60  |
-
-            전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘. 모든 분석은 반드시 성공적으로 수행되어야 하며, 오류가 발생하지 않도록 데이터 전처리를 철저히 수행해.
-            """
-            run_agent(auto_report_prompt, display_prompt=False)
+            auto_report_prompt = generate_eda_report(st.session_state.df)
+            run_agent(auto_report_prompt, display_prompt=False, is_eda_report=True)
         
         st.divider()
-        # 채팅 기록은 실시간으로 표시하지 않고, run_agent 후에만 업데이트된 메시지를 표시
         display_chat_history()
         if prompt := st.chat_input("데이터에 대해 질문을 입력하세요..."):
             run_agent(prompt)
