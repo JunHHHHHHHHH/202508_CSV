@@ -46,7 +46,6 @@ def create_cached_agent(df: pd.DataFrame, api_key: str) -> Optional[Any]:
             3. 모든 답변은 반드시 한국어로 제공하세요.
             4. 데이터 탐색 시 df.columns, df.head(), df.info(), df.describe() 등을 활용하세요.
             5. 주요 통계치 요약, 핵심 인사이트 등은 markdown 테이블로 깔끔하게 정리해서 리포트에 포함해 주세요.
-            6. 상관관계 분석, 회귀분석, 이상치 분석 시 pandas, numpy, plotly, statsmodels, scikit-learn 라이브러리를 사용하세요.
             예시:
             | 항목     | 평균   | 표준편차 |
             |----------|--------|---------|
@@ -86,7 +85,6 @@ def init_session_state():
         "selected_file": None,
         "df": None,
         "agent": None,
-        "chart_gallery": [],
         "df_name": None,
     }
     for key, value in defaults.items():
@@ -202,7 +200,7 @@ def run_agent(query: str, display_prompt: bool = True):
                     {"input": query},
                     {"callbacks": [callback_handler]}
                 )
-            final_answer = response.get("output", "죄송합니다, 답변을 생성하지 못했습니다.")
+            final_text = callback_handler.get_final_text()
             intermediate_steps = response.get("intermediate_steps", [])
             
             for step in intermediate_steps:
@@ -210,20 +208,15 @@ def run_agent(query: str, display_prompt: bool = True):
                 if isinstance(tool_output, go.Figure):
                     st.plotly_chart(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "figure")
-                    st.session_state.chart_gallery.append({
-                        "chart": tool_output,
-                        "title": f"Chart generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    })
                 elif isinstance(tool_output, pd.DataFrame):
                     st.dataframe(tool_output, use_container_width=True)
                     add_message("assistant", tool_output, "dataframe")
             
-            # 스트리밍된 텍스트를 최종 답변으로 사용, 중복 방지
-            final_text = callback_handler.get_final_text()
+            # 스트리밍된 텍스트만 메시지로 추가
             if final_text.strip():
                 add_message("assistant", final_text, "text")
             else:
-                add_message("assistant", final_answer, "text")
+                st.error("분석 결과가 비어 있습니다.")
         except Exception as e:
             error_message = f"분석 중 오류 발생: {str(e)}"
             st.error(error_message)
@@ -233,7 +226,6 @@ def setup_sidebar():
     """사이드바에 API 키 입력과 파일 업로더를 설정합니다."""
     with st.sidebar:
         st.header("설정")
-        st.warning("⚠️ 이 앱은 데이터를 안전하게 처리하지만, 민감한 데이터 업로드 시 주의하세요.")
         api_key = st.text_input("🔑 OpenAI API Key", type="password", key="api_key_input")
         if api_key:
             st.session_state["api_key"] = api_key
@@ -261,7 +253,6 @@ def setup_sidebar():
         
         if st.button("🔄️ 대화 초기화"):
             st.session_state.messages = []
-            st.session_state.chart_gallery = []
             st.session_state.agent = None
             st.session_state.df_name = None
             st.rerun()
@@ -274,7 +265,7 @@ def main():
         page_icon="📊",
         layout="wide"
     )
-    st.title("🤖 AI CSV 분석 챗봇 (v2.5)")
+    st.title("🤖 AI CSV 분석 챗봇 (v2.6)")
     st.markdown("CSV 파일을 업로드하고 데이터에 대해 질문하거나 자동 분석 기능을 사용해보세요.")
 
     setup_sidebar()
@@ -294,20 +285,10 @@ def main():
             else:
                 st.error("에이전트 초기화에 실패했습니다. API 키를 확인해주세요.")
 
-    tab1, tab2, tab3 = st.tabs(["💬 AI 챗봇", "📊 데이터 대시보드", "🖼️ 차트 갤러리"])
+    tab1, tab2 = st.tabs(["💬 AI 챗봇", "📊 데이터 대시보드"])
     
     with tab2:
         display_dashboard(st.session_state.df)
-    
-    with tab3:
-        st.subheader("🖼️ 생성된 차트 모음")
-        if not st.session_state.chart_gallery:
-            st.info("아직 생성된 차트가 없습니다. AI 챗봇에게 시각화를 요청해보세요.")
-        else:
-            for item in st.session_state.chart_gallery:
-                st.markdown(f"**{item['title']}**")
-                st.plotly_chart(item["chart"], use_container_width=True)
-                st.divider()
     
     with tab1:
         st.subheader("💬 AI에게 데이터에 대해 질문해보세요")
@@ -319,14 +300,12 @@ def main():
             업로드된 데이터프레임 `df`에 대한 종합적인 탐색적 데이터 분석(EDA) 리포트를 생성해줘.
 
             리포트에는 다음이 반드시 포함되어야 해:
-            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치(df.describe())를 마크다운 테이블로 정리.
-            - **핵심 인사이트**: 데이터에서 발견된 가장 중요한 인사이트 5가지를 번호 매겨 설명.
-            - **상관관계 분석**: 수치형 변수들(df.select_dtypes(include=['number']))만 사용하여 상관관계 행렬을 계산하고, Plotly로 히트맵을 생성해. 문자열 데이터는 제외하여 오류를 방지해. 예: `df.select_dtypes(include=['number']).corr()`.
-            - **회귀분석**: `score` 컬럼을 종속 변수로 하고, 나머지 수치형 변수들(df.select_dtypes(include=['number']).drop(columns=['score'], errors='ignore'))을 독립 변수로 사용하여 다중 선형 회귀분석을 수행해. `statsmodels` 또는 `scikit-learn`을 사용하고, 회귀 계수와 R² 값을 포함하며, Plotly로 산점도와 회귀선을 시각화해. 문자열 데이터는 제외하고, 결측치는 제거하거나 적절히 처리해.
-            - **이상치 분석**: 주요 수치형 컬럼에 대해 Box Plot을 사용하여 이상치를 시각화해. `df.select_dtypes(include=['number'])`를 사용하고, 이상치가 발견되면 해당 컬럼과 값을 설명.
-            - **결측치 및 데이터 품질**: 결측치(df.isnull().sum())와 데이터 타입 오류를 분석하고, 문제가 있다면 해결 방안을 제안.
-
-            **중요**: 모든 분석은 pandas, numpy, plotly, statsmodels, scikit-learn 라이브러리를 사용하여 수행하고, 문자열 데이터는 반드시 제외해. 결측치가 있는 경우 `df.dropna()`로 처리하거나 적절히 대체해. 리포트는 한 번만 출력되도록 해.
+            - **데이터 요약**: 데이터 크기, 컬럼 수, 주요 통계치 등(df.info(), df.describe() 사용).
+            - **핵심 인사이트**: 가장 눈에 띄는 인사이트 5가지.
+            - **상관관계 분석**: 수치형 변수들(df.select_dtypes(include=['number'])) 간 상관관계만 분석하고, 히트맵을 Plotly로 생성해. 문자열 데이터는 제외하고, 결측치는 df.dropna()로 처리하여 오류를 방지해.
+            - **회귀분석**: `scikit-learn`을 사용하여 `score` 컬럼을 종속 변수로 하고, 나머지 수치형 변수들(df.select_dtypes(include=['number']).drop(columns=['score'], errors='ignore'))을 독립 변수로 회귀분석을 수행해. 결측치는 df.dropna()로 처리하고, 문자열 데이터는 제외하며, 산점도와 회귀선을 Plotly로 생성해.
+            - **이상치 분석**: 주요 수치형 컬럼에 대해 Box Plot을 Plotly로 생성해 이상치를 시각화해. 결측치는 df.dropna()로 처리하고, 문자열 데이터는 제외해.
+            - **결측치 및 데이터 품질**: 결측치(df.isnull().sum()), 타입 오류 등 문제점 분석.
 
             **특히, 주요 통계치 요약은 마크다운 테이블로 깔끔하게 정리해 주세요.**
             **아래 예시처럼 markdown 테이블로 주요 통계를 보여주세요.**
@@ -343,7 +322,7 @@ def main():
             | run800m  | 127.79 | 3.00    |
             | score    | 6825.20| 310.60  |
 
-            전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘.
+            전문가 수준의 상세한 리포트를 마크다운 형식으로 작성해줘. 모든 분석은 반드시 성공적으로 수행되어야 하며, 오류가 발생하지 않도록 데이터 전처리를 철저히 수행해.
             """
             run_agent(auto_report_prompt, display_prompt=False)
         
