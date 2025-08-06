@@ -10,3 +10,4 @@ langchain-teddynote
 tabulate
 seaborn
 plotly
+scikit-learn
